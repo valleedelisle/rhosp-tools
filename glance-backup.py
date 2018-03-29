@@ -84,7 +84,7 @@ def get_images(directory):
                 image_list.append(i)
             else:
                 bad_image_list.append(i)
-                return image_list, bad_image_list
+        return image_list, bad_image_list
 
 def export_db(directory, delete_images = False):
     if not os.path.exists(directory):
@@ -125,19 +125,20 @@ def import_db(directory):
         for k in i:
             if k not in glance_standard_properties:
                 custom_properties[k] = i[k]
-                new_image = glance.images.create(name=i['name'])
-                glance.images.update(new_image.id, name=i['name'], 
-                                     container_format=i['container_format'], 
-                                     min_ram=i['min_ram'], 
-                                     visibility=i['visibility'], 
-                                     min_disk=i['min_disk'], 
-                                     owner=i['owner'], 
-                                     virtual_size=i['virtual_size'], 
-                                     disk_format=i['disk_format'], 
-                                     protected=i['protected'],
-                                     tags=i['tags'])
-                glance.images.update(new_image.id, custom_properties)
-                glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
+
+            new_image = glance.images.create(name=i['name'])
+            glance.images.update(new_image.id, name=i['name'], 
+                                 container_format=i['container_format'], 
+                                 min_ram=i['min_ram'], 
+                                 visibility=i['visibility'], 
+                                 min_disk=i['min_disk'], 
+                                 owner=i['owner'], 
+                                 virtual_size=i['virtual_size'], 
+                                 disk_format=i['disk_format'], 
+                                 protected=i['protected'],
+                                 tags=i['tags'])
+            glance.images.update(new_image.id, custom_properties)
+            glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
 
 def download_images(directory, i):
     print("Downloading Image %s" % (print_image_data(i)))
@@ -158,7 +159,7 @@ def print_image_data(i):
     """
     if i['size'] is None:
         i['size'] = 0
-        return "ID: {0} Name: {1} Size: {2}Mb Disk Format {3}".format(i['id'], i['name'], round(i['size'] / 1024 / 1024.0, 2), i['disk_format'])
+    return "ID: {0} Name: {1} Size: {2}Mb Disk Format {3}".format(i['id'], i['name'], round(i['size'] / 1024 / 1024.0, 2), i['disk_format'])
 
 def main():
     try:
