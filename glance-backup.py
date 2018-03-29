@@ -115,25 +115,25 @@ def import_db(directory):
     except:
         print("Unable to load json in %s" % (directory))
         exit(1)
-        for i in json_data:
-            img_data = {}
-            print("Uploading Image %s" % (print_image_data(i)))
-            for k in i:
-                if k not in glance_standard_properties:
-                    custom_properties[k] = i[k]
-                    new_image = glance.images.create(name=i['name'])
-                    glance.images.update(new_image.id, name=i['name'], 
-                                         container_format=i['container_format'], 
-                                         min_ram=i['min_ram'], 
-                                         visibility=i['visibility'], 
-                                         min_disk=i['min_disk'], 
-                                         owner=i['owner'], 
-                                         virtual_size=i['virtual_size'], 
-                                         disk_format=i['disk_format'], 
-                                         protected=i['protected'],
-                                         tags=i['tags'])
-                    glance.images.update(new_image.id, custom_properties)
-                    glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
+    for i in json_data:
+        img_data = {}
+        print("Uploading Image %s" % (print_image_data(i)))
+        for k in i:
+            if k not in glance_standard_properties:
+                custom_properties[k] = i[k]
+                new_image = glance.images.create(name=i['name'])
+                glance.images.update(new_image.id, name=i['name'], 
+                                     container_format=i['container_format'], 
+                                     min_ram=i['min_ram'], 
+                                     visibility=i['visibility'], 
+                                     min_disk=i['min_disk'], 
+                                     owner=i['owner'], 
+                                     virtual_size=i['virtual_size'], 
+                                     disk_format=i['disk_format'], 
+                                     protected=i['protected'],
+                                     tags=i['tags'])
+                glance.images.update(new_image.id, custom_properties)
+                glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
 
 def download_images(directory, i):
     print("Downloading Image %s" % (print_image_data(i)))
