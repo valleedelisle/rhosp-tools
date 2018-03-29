@@ -107,7 +107,11 @@ def delete_image_list(imgs):
 
 def import_db(directory):
     # To find custom properties, we need to remove the standard ones.
-    glance_standard_properties = ['status', 'tags', 'container_format', 'min_ram', 'update_at', 'visibility', 'owner', 'file', 'virtual_size', 'id', 'size', 'name', 'checksum', 'created_at', 'disk_format', 'protected', 'direct_url', 'schema', 'updated_at', 'min_disk']
+    glance_standard_properties = ['status', 'tags', 'container_format', 'min_ram', 
+                                  'update_at', 'visibility', 'owner', 'file', 
+                                  'virtual_size', 'id', 'size', 'name', 'checksum', 
+                                  'created_at', 'disk_format', 'protected', 
+                                  'direct_url', 'schema', 'updated_at', 'min_disk']
     custom_properties = {}
     try:
         with open(directory + "/images.json") as json_file:
