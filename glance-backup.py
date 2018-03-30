@@ -72,19 +72,25 @@ def get_images(directory):
     image_list = []
     bad_image_list = []
     all_images = []
+
+    # We validate if destination folder has enough space before going on
     total_size = 0
     for i in images:
         all_images.append(i)
         total_size += i.size
-        partition_size = check_output('df ' + directory + ' | awk \'{ print $4; }\' | tail -1', shell=True)
-        print("Total size of all images: %sMb / Filesystem %sMb" % (round(total_size / 1024 / 1024.0, 2), round(int(partition_size) / 1024 / 1024.0, 2)))
-        for i in all_images:
-            download_status = download_images(directory, i)
-            if download_status == 0:
-                image_list.append(i)
-            else:
-                bad_image_list.append(i)
-        return image_list, bad_image_list
+    fs_space = os.statvfs(directory).f_frsize * os.statvfs(directory).f_bavail
+    print("Total size of all images: %sMb / Filesystem %sMb" % (round(total_size / 1024 / 1024.0, 2), round(int(fs_space) / 1024 / 1024.0, 2)))
+    if total_size > fs_space:
+        print("There's not enough space on destination folder to host all these images")
+        exit(1)
+
+    for i in all_images:
+        download_status = download_images(directory, i)
+        if download_status == 0:
+            image_list.append(i)
+        else:
+            bad_image_list.append(i)
+    return image_list, bad_image_list
 
 def export_db(directory, delete_images = False):
     if not os.path.exists(directory):
