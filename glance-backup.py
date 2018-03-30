@@ -79,7 +79,7 @@ def get_images(directory):
         all_images.append(i)
         total_size += i.size
     fs_space = os.statvfs(directory).f_frsize * os.statvfs(directory).f_bavail
-    print("Total size of all images: %sMb / Filesystem %sMb" % (round(total_size / 1024 / 1024.0, 2), round(int(fs_space) / 1024 / 1024.0, 2)))
+    print("Total size of all images: %sGb / Filesystem %sGb" % (round(total_size / 1024 / 1024 / 1024.0, 2), round(int(fs_space) / 1024 / 1024 / 1024.0, 2)))
     if total_size > fs_space:
         print("There's not enough space on destination folder to host all these images")
         exit(1)
@@ -95,13 +95,13 @@ def get_images(directory):
 def export_db(directory, delete_images = False):
     if not os.path.exists(directory):
         os.makedirs(directory)
-        imgs, bad_imgs = get_images(directory)
-        with open(directory + '/images.json', 'w') as outfile:
-            json.dump(imgs, outfile)
-            if delete_images is True:
-                print("Deleting images")
-                delete_image_list(imgs)
-                delete_image_list(bad_imgs)
+    imgs, bad_imgs = get_images(directory)
+    with open(directory + '/images.json', 'w') as outfile:
+        json.dump(imgs, outfile)
+        if delete_images is True:
+            print("Deleting images")
+            delete_image_list(imgs)
+            delete_image_list(bad_imgs)
 
 def delete_image_list(imgs):
     """
@@ -132,19 +132,19 @@ def import_db(directory):
             if k not in glance_standard_properties:
                 custom_properties[k] = i[k]
 
-            new_image = glance.images.create(name=i['name'])
-            glance.images.update(new_image.id, name=i['name'], 
-                                 container_format=i['container_format'], 
-                                 min_ram=i['min_ram'], 
-                                 visibility=i['visibility'], 
-                                 min_disk=i['min_disk'], 
-                                 owner=i['owner'], 
-                                 virtual_size=i['virtual_size'], 
-                                 disk_format=i['disk_format'], 
-                                 protected=i['protected'],
-                                 tags=i['tags'])
-            glance.images.update(new_image.id, custom_properties)
-            glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
+        new_image = glance.images.create(name=i['name'])
+        glance.images.update(new_image.id, name=i['name'], 
+                             container_format=i['container_format'], 
+                             min_ram=i['min_ram'], 
+                             visibility=i['visibility'], 
+                             min_disk=i['min_disk'], 
+                             owner=i['owner'], 
+                             virtual_size=i['virtual_size'], 
+                             disk_format=i['disk_format'], 
+                             protected=i['protected'],
+                             tags=i['tags'])
+        glance.images.update(new_image.id, custom_properties)
+        glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
 
 def download_images(directory, i):
     print("Downloading Image %s" % (print_image_data(i)))
@@ -175,8 +175,8 @@ def main():
         sys.exit(2)
 
     action = None
-    backupdir = None
-    delete_images = False
+    directory = None
+    delete_images = False 
     for o, a in opts:
         if o in ("-i", "--import"):
             action = "import"
@@ -186,14 +186,20 @@ def main():
             action = "export"
         elif o == "--backup-dir":
             directory = a
-        if delete_images is True and action == "export":
-            text = raw_input("Careful, this is going to delete all your glance images. and download to the folder '" + directory + "'. Are you sure? [y/N] ") 
-            if text != "y":
-                exit(1)
-        if action == "export":
-            export_db(directory, delete_images)
-        elif action == "import":
-            import_db(directory)
+
+    if delete_images is True and action == "export":
+        text = raw_input("Careful, this is going to delete all your glance images. and download to the folder '" + directory + "'. Are you sure? [y/N] ") 
+        if text != "y":
+            exit(1)
+
+    if directory is None:
+        print("You need to specify a --backup-dir")
+        exit(1)
+
+    if action == "export":
+        export_db(directory, delete_images)
+    elif action == "import":
+        import_db(directory)
  
 if __name__ == "__main__":
     main()
