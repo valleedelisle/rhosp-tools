@@ -24,6 +24,9 @@ optional arguments:
 ```
 
 `glance-backup.py`
+
 Script that exports and imports the content of glance database, and downloads the images.
 
+```
 Usage: glance-backup.py --import or --export with --backup-dir. If you --export, you can add --delete to delete images from glance after exporting them.
+```
