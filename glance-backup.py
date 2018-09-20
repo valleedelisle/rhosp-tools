@@ -15,14 +15,15 @@
 #
 # This scripts can take a backup of the glance images and reimport that backup
 # Constraints:
-# - Images in glance are immutable. We need to mark them as deleted to reupload them
-# - This is going to change the images uuid
+# - Images in glance are immutable. We need to delete them to reupload them.
+# - Because we are preserving IDs, we need to "glance-manage db purge" before we reupload them.
 #
 # When trying to upload the image over an active image we get: Image status transition from active to saving is not allowed
 # When trying to change the status from active to saving, we get: Attribute 'status' is read-only.
 # Details about image statuses: https://docs.openstack.org/glance/pike/user/statuses.html
 #
-# Because of all this, we need to download images and metadata, and reupload them cleanly after, with new UUID
+# Because of all this, we need to download images and metadata, and reupload them cleanly after
+
 from __future__ import print_function
 
 
@@ -92,6 +93,16 @@ def get_images(directory):
             bad_image_list.append(i)
     return image_list, bad_image_list
 
+
+def delete_image_list(imgs):
+    """
+    Delete all images from a list of image objects
+    :param imgs: List of glance image objects
+    """
+    for i in imgs:
+        glance.images.delete(i.id)
+
+
 def export_db(directory, delete_images = False):
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -103,6 +114,7 @@ def export_db(directory, delete_images = False):
             delete_image_list(imgs)
             delete_image_list(bad_imgs)
 
+
 def delete_image_list(imgs):
     """
     Delete all images from a list of image objects
@@ -111,12 +123,13 @@ def delete_image_list(imgs):
     for i in imgs:
         glance.images.delete(i.id)
 
+
 def import_db(directory):
     # To find custom properties, we need to remove the standard ones.
     glance_standard_properties = ['status', 'tags', 'container_format', 'min_ram', 
                                   'update_at', 'visibility', 'owner', 'file', 
                                   'virtual_size', 'id', 'size', 'name', 'checksum', 
-                                  'created_at', 'disk_format', 'protected', 
+                                  'created_at', 'disk_format', 'protected', 'locations', 
                                   'direct_url', 'schema', 'updated_at', 'min_disk']
     custom_properties = {}
     try:
@@ -131,8 +144,8 @@ def import_db(directory):
         for k in i:
             if k not in glance_standard_properties:
                 custom_properties[k] = i[k]
-
-        new_image = glance.images.create(name=i['name'])
+	print("Creating image %s with ID %s" % (i['name'], i['id']))
+        new_image = glance.images.create(name=i['name'], id=i['id'])
         glance.images.update(new_image.id, name=i['name'], 
                              container_format=i['container_format'], 
                              min_ram=i['min_ram'], 
@@ -145,6 +158,8 @@ def import_db(directory):
                              tags=i['tags'])
         glance.images.update(new_image.id, custom_properties)
         glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
+        print("Image Uploaded: %s" % (print_image_data(new_image)))
+
 
 def download_images(directory, i):
     print("Downloading Image %s" % (print_image_data(i)))
@@ -157,6 +172,7 @@ def download_images(directory, i):
         return 1
     return 0
 
+
 def print_image_data(i):
     """
     Function that returns a standard format for an image object
@@ -166,6 +182,7 @@ def print_image_data(i):
     if i['size'] is None:
         i['size'] = 0
     return "ID: {0} Name: {1} Size: {2}Mb Disk Format {3}".format(i['id'], i['name'], round(i['size'] / 1024 / 1024.0, 2), i['disk_format'])
+
 
 def main():
     try:
@@ -200,6 +217,9 @@ def main():
         export_db(directory, delete_images)
     elif action == "import":
         import_db(directory)
+
+    if delete_images is True:
+        print("You have chosen to delete images, you will have to purge them from the database with glance-manage before importing them back.\nPlease run:\nsudo glance-manage db purge --age_in_days 0")
  
 if __name__ == "__main__":
     main()
