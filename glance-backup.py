@@ -156,7 +156,8 @@ def import_db(directory):
                              disk_format=i['disk_format'], 
                              protected=i['protected'],
                              tags=i['tags'])
-        glance.images.update(new_image.id, custom_properties)
+	print("Setting properties: %s" % (custom_properties))
+	glance.images.update(new_image.id, **custom_properties)
         glance.images.upload(new_image.id, open(directory + "/" + i['id'], 'rb'))
         print("Image Uploaded: %s" % (print_image_data(new_image)))
 
