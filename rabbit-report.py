@@ -97,7 +97,7 @@ def format_as_table(data, keys, header=None, sort_by_key=None, sort_order_revers
         column_widths.append(max(len(str(column[key])) for column in data))
 
     # Create a tuple pair of key and the associated column width for it
-    key_width_pair = zip(keys, column_widths)
+    key_width_pair = list(zip(keys, column_widths))
 
     format = ('%-*s ' * len(keys)).strip() + '\n'
     formatted_data = ''
