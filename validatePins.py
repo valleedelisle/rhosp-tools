@@ -218,7 +218,7 @@ for host in hypervisors:
       try:
         instance_list[i]['disk_size'] = re.search(disk_size_rex, oc_instance_disk).group(1)
       except:
-        logger.error("Unable to find instance %s disk size %s" % (i, oc_instance_disk))
+        log.error("Unable to find instance %s disk size %s" % (i, oc_instance_disk))
       try:
         dumpxml = ET.fromstring(oc_instance_metadata)
         instance_list[i]['name'] = dumpxml.find('metadata').find('nova:instance', nova_ns).find('nova:name', nova_ns).text
