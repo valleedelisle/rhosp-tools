@@ -38,9 +38,6 @@ from keystoneclient.v3 import client
 from novaclient import client
 from nova.virt.hardware import parse_cpu_spec
 
-# Controller's DNS or IP where we can poke the overcloud DB
-controllerAddress = "ocld1"
-
 # We need to wipe out logger config because of nova.
 import logging
 logging.shutdown()
@@ -69,6 +66,7 @@ hypervisors = defaultdict()
 
 # Regex's used for parsing
 uuid_rex = re.compile('.*-uuid ([^\s]+) ')
+controller_rex = re.compile('.*(control|ocld|ctrl).*')
 instance_id_rex = re.compile('.*guest=(instance-[a-z0-9]+).*')
 disk_size_rex = re.compile('disk size: (.*)')
 
@@ -108,15 +106,19 @@ servers = nova.servers.list(detailed=True)
 # We're getting a list of all the hypervisors and their IPs to ssh in later
 for server in servers:
   hypervisors[server.name] = server.networks['ctlplane'][0]
+  if re.search(controller_rex, server.name) and not controller_ip:
+    log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0])
+    controller_ip = server.networks['ctlplane'][0]
 
 log.debug("%i hypervisors (including controllers)" % len(hypervisors))
 if len(hypervisors) == 0:
   log.error("No hypervisor found in the undercloud?")
   sys.exit(1)
+sys.exit(1)
 
 log.debug("Poking the overcloud DB to get numa topologogy")
 # Getting the numa topology from the overcloud
-oc_db_data, broken = ssh_oc("ocld1", "sudo mysql -N -s -D nova -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid;'")
+oc_db_data, broken = ssh_oc(controller_ip, "sudo mysql -N -s -D nova -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid;'")
 if broken:
   log.error("Unable to ssh in the controller")
   sys.exit(1)
