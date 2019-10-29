@@ -63,6 +63,7 @@ ps_pid_per_host = defaultdict(lambda: defaultdict(int))
 pid_cache = defaultdict(lambda: defaultdict(int))
 instance_list = defaultdict(lambda: defaultdict(list))
 hypervisors = defaultdict()
+controller_ip = None
 
 # Regex's used for parsing
 uuid_rex = re.compile('.*-uuid ([^\s]+) ')
