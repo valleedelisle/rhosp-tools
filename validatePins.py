@@ -114,7 +114,6 @@ log.debug("%i hypervisors (including controllers)" % len(hypervisors))
 if len(hypervisors) == 0:
   log.error("No hypervisor found in the undercloud?")
   sys.exit(1)
-sys.exit(1)
 
 log.debug("Poking the overcloud DB to get numa topologogy")
 # Getting the numa topology from the overcloud
