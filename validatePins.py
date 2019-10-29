@@ -107,7 +107,7 @@ servers = nova.servers.list(detailed=True)
 for server in servers:
   hypervisors[server.name] = server.networks['ctlplane'][0]
   if re.search(controller_rex, server.name) and not controller_ip:
-    log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0])
+    log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0]))
     controller_ip = server.networks['ctlplane'][0]
 
 log.debug("%i hypervisors (including controllers)" % len(hypervisors))
