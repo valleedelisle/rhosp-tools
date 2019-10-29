@@ -118,7 +118,7 @@ if len(hypervisors) == 0:
 
 log.debug("Poking the overcloud DB to get numa topologogy")
 # Getting the numa topology from the overcloud
-oc_db_data, broken = ssh_oc(controller_ip, "sudo mysql -N -s -D nova -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid;'")
+oc_db_data, broken = ssh_oc(controller_ip, "sudo mysql -u root --password=\$(sudo hiera mysql::server::root_password) -N -s -D nova -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid where vm_state != \\\"deleted\\\";'")
 if broken:
   log.error("Unable to ssh in the controller")
   sys.exit(1)
@@ -227,7 +227,7 @@ for host in hypervisors:
       except:
         log.error("Unable to find instance %s name for %s" % (i, dumpxml))
         pass
-      
+
   # Comparison starts here
   # Let's make sure we have data on both sides
   if host in ps_pinned_per_host:
