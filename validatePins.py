@@ -64,6 +64,27 @@ pid_cache = defaultdict(lambda: defaultdict(int))
 instance_list = defaultdict(lambda: defaultdict(list))
 hypervisors = defaultdict()
 
+class Hypervisor():
+  name = None
+  ip = None
+  role = None
+  pinset_list = list()
+  pinset_line = None
+  ps_pinned_cpu = defaultdict(int)
+  db_pinned_cpu = defaultdict(int)
+  instances = list()
+  def __init__(self, **kwargs):                                                                                                                                                                                                                                                                                                                                                                                                             
+    self.__dict__.update(kwargs)
+
+class Instance():
+  name = None
+  uuid = None
+  state = None
+  db_pcpus = defaultdict(int)
+  ps_pcpus = defaultdict(int)
+  def __init__(self, **kwargs):                                                                                                                                                                                                                                                                                                                                                                                                             
+    self.__dict__.update(kwargs)
+
 # Regex's used for parsing
 uuid_rex = re.compile('.*-uuid ([^\s]+) ')
 controller_rex = re.compile('.*(control|ocld|ctrl).*')
@@ -105,10 +126,15 @@ servers = nova.servers.list(detailed=True)
 
 # We're getting a list of all the hypervisors and their IPs to ssh in later
 for server in servers:
-  hypervisors[server.name] = server.networks['ctlplane'][0]
-  if re.search(controller_rex, server.name) and not controller_ip:
-    log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0])
-    controller_ip = server.networks['ctlplane'][0]
+  hypervisor = Hypervisor(name=server.name, ip=server.networks['ctlplane'][0])
+  if re.search(controller_rex, server.name):
+    hypervisor.role = "Controller"
+    if not controller_ip:
+      log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0])
+      controller_ip = server.networks['ctlplane'][0]
+  else:
+    hypervisor.role = "Compute"
+  hypervisors[server.name] = hypervisor
 
 log.debug("%i hypervisors (including controllers)" % len(hypervisors))
 if len(hypervisors) == 0:
@@ -125,25 +151,23 @@ if broken:
 for line in oc_db_data.splitlines():
   l = line.split()
   # We have to strip the domain here
-  hostname = l[0].split('.')[0]
-  instance_uuid = l[1]
-  vm_state = l[2]
+  instance = Instance(name=l[0].split('.')[0], uuid=l[1], state=l[2])
   try:
     data = json.loads(" ".join(l[3:]))
   except ValueError:
     # Instance has no topology defined, we just skip it
     continue
-  if vm_state == 'active':
+  if instance.vm_state == 'active':
     d = data['nova_object.data']['cells']
     instance_count += 1
     for cell in d:
       if not isinstance(cell['nova_object.data'], list):
         if cell['nova_object.data']['cpu_pinning_raw']:
           for v,p in cell['nova_object.data']['cpu_pinning_raw'].items():
-            db_pinned_per_host[hostname][p] += 1
-            instance_list[instance_uuid]['db_pcpus'].append(p)
+            hypervisors[hostname].db_pinned_cpu[p] += 1
+            instance.db_pcpus[p] += 1
         else:
-          log.debug("[%s/%s] Instance has no pins defined in the extra_spec numa_topology object" % (instance_uuid,vm_state))
+          log.debug("[%s] Instance has no pins defined in the extra_spec numa_topology object" % (instance))
 
 
 log.debug("%i instances found" % instance_count)
@@ -153,25 +177,24 @@ if instance_count == 0:
   sys.exit(0)
 
 # SSHing into the hypervisors to get the process list
-for host in hypervisors:
+for hostname in hypervisors:
+  host = hypervisors[hostname]
   ps_pid_per_cpu = defaultdict(lambda: defaultdict(int))
-  host_ip = hypervisors[host.split(".")[0]]
   # Getting the pinset configuration in nova.conf
-  oc_pin_set, broken = ssh_oc(host_ip, "sudo crudini --get /etc/nova/nova.conf DEFAULT vcpu_pin_set | cat 2>&1")
+  oc_pin_set, broken = ssh_oc(host.ip, "sudo crudini --get /etc/nova/nova.conf DEFAULT vcpu_pin_set | cat 2>&1")
   if broken:
     log.error("[%s] host not responding to ssh" % (host))
     continue
 
-  oc_processes, broken = ssh_oc(host_ip, "ps -o cpuid,pid,comm,command -eL | grep '/KVM' | grep -v grep | cat")
+  oc_processes, broken = ssh_oc(host.ip, "ps -o cpuid,pid,comm,command -eL | grep '/KVM' | grep -v grep | cat")
 
   for line in oc_pin_set.splitlines():
     # We parse it using nova's lib
     try:
-      pinset = parse_cpu_spec(line)
-      config_pinset = line
+      host.pinset_list = parse_cpu_spec(line)
+      host.pinset_line = line
     except:
-      pinset = None
-      config_pinset = None
+      pass
 
   if not pinset:
     log.debug("[%s] No pinset defined" % host)
