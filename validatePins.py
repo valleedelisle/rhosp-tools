@@ -65,6 +65,7 @@ ps_pid_per_host = defaultdict(lambda: defaultdict(int))
 pid_cache = defaultdict(lambda: defaultdict(int))
 instance_list = defaultdict(lambda: defaultdict(list))
 hypervisors = defaultdict()
+controller_ip = None
 
 # Counters
 errors = 0
@@ -294,8 +295,6 @@ for hostname in hypervisors:
 
     if uuid:
       host.ps_pin_cpu(pid, uuid, cpu, instance_id)
-#    ps_pinned_per_host[host][cpu] += 1
-#    ps_pid_per_cpu[cpu][pid] += 1
 
   for i in host.instance_list:
     instance = host.instance_list[i]
