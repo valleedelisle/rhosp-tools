@@ -18,7 +18,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ### Description:
 
 Compares the numa topology from the nova database with the
-live process list of the computes
+live process list of the computes.
+
+This was written based on Red Hat OpenStack Platforn 10 (Newton)
 
 ### Usage:
   stack@undercloud $ . stackrc
@@ -56,7 +58,7 @@ if "OS_CLOUDNAME" not in os.environ or os.environ["OS_CLOUDNAME"] != "undercloud
 # nova namespace for xml parsing
 nova_ns = {'nova': 'http://openstack.org/xmlns/libvirt/nova/1.0' }
 
-#Some dicts
+# Some dicts
 db_pinned_per_host = defaultdict(lambda: defaultdict(int))
 ps_pinned_per_host = defaultdict(lambda: defaultdict(int))
 ps_pid_per_host = defaultdict(lambda: defaultdict(int))
@@ -65,15 +67,105 @@ instance_list = defaultdict(lambda: defaultdict(list))
 hypervisors = defaultdict()
 controller_ip = None
 
+# Counters
+errors = 0
+instance_count = 0
+
+class BaseObject():
+  def __repr__(self):
+    return "%s(%s)" % (
+      (self.__class__.__name__),
+      ', '.join(["%s=%r" % (key, getattr(self, key))
+                 for key in sorted(self.__dict__.keys())
+                 if not key.startswith('_')]))
+
+class Hypervisor(BaseObject):
+  # Metadata
+  name = None
+  ip = None
+  role = None
+
+  # Pingset config
+  pinset_list = list()
+  pinset_line = None
+
+  # Pinned cpus based on ps or db
+  ps_pinned_cpu = defaultdict(int)
+  db_pinned_cpu = defaultdict(int)
+  db_unused_pin = list()
+  ps_unused_pin = list()
+
+  # Keeping track of which pid on which cpu
+  ps_pid_cpu = defaultdict(lambda: defaultdict(int))
+
+  # Keeping track of instances / host
+  instances = defaultdict()
+
+  # Error list
+  errors = list()
+  def __init__(self, **kwargs):                                                                                                                                                                                                                                                                                                                                                                                                             
+    self.__dict__.update(kwargs)
+
+  def calc_unused(self, src):
+    """
+    Function to calculate unused pins
+    """
+    if len(self.pinset_list):
+      pinned = getattr(self, src + "_pinned_cpu")
+      unused = getattr(self, src + "_unused_pin")
+      for p in self.pinset_list:
+        if p not in pinned:
+          unused.append(p)
+      setattr(self, src + "_unused_pin", unused)
+
+  def db_pin_cpu(self, uuid, cpu):
+    """
+    Wrapper called when mapping the DB's topology
+    to this object
+    """
+    self.db_pinned_cpu[p] += 1       
+    self.instance_list[uuid].db_pcpus[p] += 1  
+    self.calc_unused('db')
+
+  def ps_pin_cpu(self, pid, uuid, cpu, instance_id):
+    """
+    Wrapper called when mapping the output of ps
+    to this object
+    """
+    global errors
+    instance = self.instance_list[uuid]
+    instance.instance_id = instance_id
+    instance.pid = pid
+    instance.ps_pcpus[cpu] += 1
+    self.ps_pinned_cpu[cpu] += 1
+    self.ps_pid_cpu[pid][cpu] += 1
+    self.calc_unused('ps')
+    if cpu not in self.pinset_list:
+      errors += 1
+      instance.outside_pcpu.append(str(cpu))
+      if "pCPU outside of pinset" not in instance.errors:
+        instance.errors.append("pCPU outside of pinset")
+
+
+
+class Instance(BaseObject):
+  name = None
+  uuid = None
+  state = None
+  db_pcpus = defaultdict(int)
+  ps_pcpus = defaultdict(int)
+  outside_pcpu = list()
+  shared_pcpu = list()
+  disk_size = 0
+  errors = list()
+  def __init__(self, **kwargs):                                                                                                                                                                                                                                                                                                                                                                                                             
+    self.__dict__.update(kwargs)
+
 # Regex's used for parsing
 uuid_rex = re.compile('.*-uuid ([^\s]+) ')
 controller_rex = re.compile('.*(control|ocld|ctrl).*')
 instance_id_rex = re.compile('.*guest=(instance-[a-z0-9]+).*')
 disk_size_rex = re.compile('disk size: (.*)')
-
-# Counters
-errors = 0
-instance_count = 0
 
 # Getting undercloud's credentials
 AUTH_URL = os.environ['OS_AUTH_URL']
@@ -106,19 +198,25 @@ servers = nova.servers.list(detailed=True)
 
 # We're getting a list of all the hypervisors and their IPs to ssh in later
 for server in servers:
-  hypervisors[server.name] = server.networks['ctlplane'][0]
-  if re.search(controller_rex, server.name) and not controller_ip:
-    log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0]))
-    controller_ip = server.networks['ctlplane'][0]
+  hypervisor = Hypervisor(name=server.name, ip=server.networks['ctlplane'][0])
+  if re.search(controller_rex, server.name):
+    hypervisor.role = "Controller"
+    if not controller_ip:
+      log.info("Using controller %s (%s)" % (server.name, server.networks['ctlplane'][0]))
+      controller_ip = server.networks['ctlplane'][0]
+  else:
+    hypervisor.role = "Compute"
+  hypervisors[server.name] = hypervisor
 
 log.debug("%i hypervisors (including controllers)" % len(hypervisors))
-if len(hypervisors) == 0:
+if not len(hypervisors):
   log.error("No hypervisor found in the undercloud?")
   sys.exit(1)
 
 log.debug("Poking the overcloud DB to get numa topologogy")
 # Getting the numa topology from the overcloud
-oc_db_data, broken = ssh_oc(controller_ip, "sudo mysql -u root --password=\$(sudo hiera mysql::server::root_password) -N -s -D nova -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid where vm_state != \\\"deleted\\\";'")
+# We have to ssh into the controllers because normally, the mysql process isn't accessible from outside
+oc_db_data, broken = ssh_oc(controller_ip, "sudo mysql -N -s -D nova -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid;'")
 if broken:
   log.error("Unable to ssh in the controller")
   sys.exit(1)
@@ -126,25 +224,25 @@ if broken:
 for line in oc_db_data.splitlines():
   l = line.split()
   # We have to strip the domain here
-  hostname = l[0].split('.')[0]
-  instance_uuid = l[1]
-  vm_state = l[2]
+  instance = Instance(hypervisor=l[0].split('.')[0], uuid=l[1], state=l[2])
+  host = hypervisors[instance.hypervisor]
+  host.instance_list[instance.uuid] = instance
   try:
     data = json.loads(" ".join(l[3:]))
   except ValueError:
     # Instance has no topology defined, we just skip it
     continue
-  if vm_state == 'active':
+  if instance.vm_state == 'active':
     d = data['nova_object.data']['cells']
     instance_count += 1
     for cell in d:
       if not isinstance(cell['nova_object.data'], list):
         if cell['nova_object.data']['cpu_pinning_raw']:
           for v,p in cell['nova_object.data']['cpu_pinning_raw'].items():
-            db_pinned_per_host[hostname][p] += 1
-            instance_list[instance_uuid]['db_pcpus'].append(p)
+            host.db_pin_cpu(instance.uuid, p)
         else:
-          log.debug("[%s/%s] Instance has no pins defined in the extra_spec numa_topology object" % (instance_uuid,vm_state))
+          log.debug("[%s] Instance has no pins defined in the extra_spec numa_topology object" % (instance))
+  
 
 
 log.debug("%i instances found" % instance_count)
@@ -154,25 +252,26 @@ if instance_count == 0:
   sys.exit(0)
 
 # SSHing into the hypervisors to get the process list
-for host in hypervisors:
+for hostname in hypervisors:
+  host = hypervisors[hostname]
   ps_pid_per_cpu = defaultdict(lambda: defaultdict(int))
-  host_ip = hypervisors[host.split(".")[0]]
   # Getting the pinset configuration in nova.conf
-  oc_pin_set, broken = ssh_oc(host_ip, "sudo crudini --get /etc/nova/nova.conf DEFAULT vcpu_pin_set | cat 2>&1")
+  oc_pin_set, broken = ssh_oc(host.ip, "sudo crudini --get /etc/nova/nova.conf DEFAULT vcpu_pin_set | cat 2>&1")
   if broken:
     log.error("[%s] host not responding to ssh" % (host))
     continue
 
-  oc_processes, broken = ssh_oc(host_ip, "ps -o cpuid,pid,comm,command -eL | grep '/KVM' | grep -v grep | cat")
+  oc_processes, broken = ssh_oc(host.ip, "ps -o cpuid,pid,comm,command -eL | grep '/KVM' | grep -v grep | cat")
 
   for line in oc_pin_set.splitlines():
     # We parse it using nova's lib
     try:
-      pinset = parse_cpu_spec(line)
-      config_pinset = line
+      host.get_pinset(line)
+      host.pinset_list = parse_cpu_spec(line)
+      host.pinset_line = line
     except:
-      pinset = None
-      config_pinset = None
+      log.error("[%s] unable to parse vcpu_pin_set: %s" % (host, host.pinset_line))
+      pass
 
   if not pinset:
     log.debug("[%s] No pinset defined" % host)
@@ -194,86 +293,68 @@ for host in hypervisors:
       instance_id = None
       pass
 
-    # Here we generate the "instance" dict object
-    # This should probably have been a class
-    instance_list[uuid]['instance_id'] = instance_id
-    instance_list[uuid]['host_pcpus'].append(cpu)
-    instance_list[uuid]['host_name'] = host
-    instance_list[uuid]['host_ip'] = host_ip
-    instance_list[uuid]['pid'] = pid
+    if uuid:
+      host.ps_pin_cpu(pid, uuid, cpu, instance_id)
 
-    # Keeping tabs
-    ps_pinned_per_host[host][cpu] += 1
-    ps_pid_per_cpu[cpu][pid] += 1
-
-    if cpu not in pinset:
-      instance_list[uuid]['outside_pcpu'].append(str(cpu))
-      if "pCPU outside of pinset" not in instance_list[uuid]['errors']:
-        instance_list[uuid]['errors'].append("pCPU outside of pinset")
-      errors += 1
-
-  # Getting the ephemeral disk size and instance-name
-  for i in instance_list:
-    if instance_list[i]['host_name'] == host:
-      oc_instance_disk, broken = ssh_oc(host_ip, "sudo qemu-img info /var/lib/nova/instances/%s/disk" % i)
-      oc_instance_metadata, broken = ssh_oc(host_ip, "sudo virsh dumpxml %s" % instance_list[i]['instance_id'])
-      try:
-        instance_list[i]['disk_size'] = re.search(disk_size_rex, oc_instance_disk).group(1)
-      except:
-        log.error("Unable to find instance %s disk size %s" % (i, oc_instance_disk))
-      try:
-        dumpxml = ET.fromstring(oc_instance_metadata)
-        instance_list[i]['name'] = dumpxml.find('metadata').find('nova:instance', nova_ns).find('nova:name', nova_ns).text
-      except:
-        log.error("Unable to find instance %s name for %s" % (i, dumpxml))
-        pass
-
+  for i in host.instance_list:
+    instance = host.instance_list[i]
+    # Trying to find the size of the ephemeral storage in case we need to reshelve instance
+    oc_instance_disk, broken = ssh_oc(host.ip, "sudo qemu-img info /var/lib/nova/instances/%s/disk" % i)
+    # Getting instance metadata
+    oc_instance_metadata, broken = ssh_oc(host.ip, "sudo virsh dumpxml %s" % instance.instance_id)
+    try:
+      instance.disk_size = re.search(disk_size_rex, oc_instance_disk).group(1)
+    except:
+      log.error("Unable to find instance %s disk size: %s" % (instance, oc_instance_disk))
+      pass
+    try:
+      dumpxml = ET.fromstring(oc_instance_metadata)
+      instance.name = dumpxml.find('metadata').find('nova:instance', nova_ns).find('nova:name', nova_ns).text
+    except:
+      log.error("Unable to find instance %s name for %s" % (instance, dumpxml))
+      pass
+      
   # Comparison starts here
   # Let's make sure we have data on both sides
-  if host in ps_pinned_per_host:
-    if host not in db_pinned_per_host:
-      log.error("[%s] Found KVM process on host but not in Nova DB" % (host))
-      errors += 1
-      continue
-  if host in db_pinned_per_host:
-    if host not in ps_pinned_per_host:
-      log.error("[%s] Found pins in Nova DB, but not used by KVM on host" % (host))
-      errors += 1
-      continue
+  if len(host.ps_pinned_cpu) and not len(host.db_pinned_cpu):
+    log.error("[%s] Found KVM process on host but not in Nova DB" % (host))
+    errors += 1
+    continue
+  if not len(host.ps_pinned_cpu) and len(host.db_pinned_cpu):
+    log.error("[%s] Found pins in Nova DB, but not used by KVM on host" % (host))
+    errors += 1
+    continue
   # we validate we only have one process per pCPU
-  for cpu in ps_pinned_per_host[host]:
-    if ps_pinned_per_host[host][cpu] > 1:
-      log.debug("[%s] pCPU %s is pinned %s times" % (host, cpu, ps_pinned_per_host[host][cpu]))
-      for i in instance_list:
-        if instance_list[i]['host_name'] == host and cpu in instance_list[i]['host_pcpus']:
-          if "Some pCPUs are shared" not in instance_list[i]['errors']:
-            instance_list[i]['errors'].append("Some pCPUs are shared")
-          instance_list[i]['shared_pcpu'].append(str(cpu))
+  for cpu in host.ps_pinned_cpu:
+    if host.ps_pinned_cpu[cpu] > 1:
+      log.debug("[%s] pCPU %s is pinned %s times" % (host, cpu, host.ps_pinned_cpu[cpu]))
+      for i in host.instance_list:
+        instance = host.instance_list[i]
+        if cpu in instance.ps_cpus:
+          if "Some pCPUs are shared" not in instance.errors:
+            instance.errors.append("Some pCPUs are shared")
+          instance.shared_pcpu.append(str(cpu))
       errors += 1
   # The dics should be the same on each host.
-  if sorted(db_pinned_per_host[host]) != sorted(ps_pinned_per_host[host]):
+  if sorted(host.db_pinned_cpu) != sorted(host.ps_pinned_cpu):
     log.error("[%s] Mismatch between Nova DB and processes on host" % (host))
     errors += 1
-    for cpu in db_pinned_per_host[host]:
-      log.debug("Host %s CPU %s DB Count %s Process count %s" % (host, cpu, db_pinned_per_host[host][cpu], ps_pinned_per_host[host][cpu]))
+    for cpu in host.db_pinned_cpu:
+      log.debug("Host %s CPU %s DB Count %s Process count %s" % (host, cpu, host.db_pinned_cpu[cpu], host.ps_pinned_cpu[cpu]))
 
   # Generating a list of unused pins
-  unused = defaultdict(list)
-  for p in pinset:
-    if p not in ps_pinned_per_host[host]:
-      unused['physical'].append(p)
-    if p not in db_pinned_per_host[host]:
-      unused['database'].append(p)
-  log.debug("[%s] Host uses %i pinned vCPUs on %i available reserved pCPU" % (host, len(db_pinned_per_host[host]), len(pinset)))
-  if len(db_pinned_per_host[host]):
-    for t in unused:
-      log.debug("[%s] Unused %s pins: %s" % (host,t,unused[t]))
+  if len(host.db_pinned_cpu):
+    log.debug("[%s] (DB) Unused pins: %s" % (host,host.db_unused_pin))
+    log.debug("[%s] (PS) Unused pins: %s" % (host,host.ps_unused_pin))
 
 print("Run completed, %i errors" % errors)
 
 # Outputing some CSV
 if errors:
   print('"%s","%s","%s","%s","%s","%s","%s"' % ("Instance UUID", "Host Name", "Instance Name", "Ephemeral Disk Size", "Shared pCPUs", "Outside pCPUs", "Errors"))
-for i in instance_list:
-  if len(instance_list[i]['errors']):
-    print('"%s","%s","%s","%s","%s","%s","%s"' % (i, instance_list[i]['host_name'], instance_list[i]['name'], instance_list[i]['disk_size'], ",".join(instance_list[i]['shared_pcpu']), ",".join(instance_list[i]['outside_pcpu']), ",".join(instance_list[i]['errors'])))
+for hostname in hypervisors:
+  host = hypervisors[hostname]
+  for i in host.instance_list:
+    instance = host.instance_list[i]
+    if len(instance.errors):
+      print('"%s","%s","%s","%s","%s","%s","%s"' % (i, instance.hypervisor, instance.name, instance.disk_size, ",".join(instance.shared_pcpu), ",".join(instance.outside_pcpu), ",".join(instance.errors)))
