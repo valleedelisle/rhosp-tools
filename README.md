@@ -2,7 +2,7 @@
 
 OSP Tools I made that can be useful for the community
 
-`rabbit-report.py`
+## rabbit-report.py
 
 Script to parse the output of rabbitmqctl report
 
@@ -23,7 +23,7 @@ optional arguments:
   --get-fields          Return fields for a section and quit
 ```
 
-`glance-backup.py`
+## glance-backup.py
 
 Script that exports and imports the content of glance database, and downloads the images.
 
@@ -31,7 +31,8 @@ Script that exports and imports the content of glance database, and downloads th
 Usage: glance-backup.py --import or --export with --backup-dir. If you --export, you can add --delete to delete images from glance after exporting them.
 ```
 
-`dump_virtio_ring.py`
+## dump_virtio_ring.py
+
 This tool was written by a fellow Red Hatter, Maxime Coquelin.
 
 To run it:
