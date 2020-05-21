@@ -36,8 +36,14 @@ tag_dates = defaultdict()
 def skopeo(image_url, tag=None):
   if tag:
     image_url += ':' + tag 
-  inspect = json.loads(subprocess.run(['skopeo','inspect','docker://' + image_url],
-                                      stdout=subprocess.PIPE).stdout)
+  while True:
+    try:
+      inspect = json.loads(subprocess.run(['skopeo','inspect','docker://' + image_url],
+                                          stdout=subprocess.PIPE).stdout)
+    except json.decoder.JSONDecodeError as e:
+      sys.stderr.write("Got JSON exception, retrying")
+      continue
+    break
   inspect['RepoTags'].remove('latest')
   inspect['RepoTags'].sort(key=lambda s: list(map(int, re.split('\.|\-', s))),
                            reverse=sort_reverse)
@@ -56,4 +62,5 @@ for tag in inspect_latest['RepoTags']:
   if (('before' in operator and created_date >= filter_date) or
       ('after' in operator and created_date <= filter_date)):
     break
-print(sorted(tag_dates.items(), key=lambda i: i[1], reverse=True)[0][0])
+if len(tag_dates) > 0:
+  print(sorted(tag_dates.items(), key=lambda i: i[1], reverse=True)[0][0])
