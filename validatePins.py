@@ -75,8 +75,8 @@ class BaseObject():
     return "%s(%s)" % (
       (self.__class__.__name__),
       ', '.join(["%s=%r" % (key, getattr(self, key))
-                 for key in sorted(self.__dict__.keys())]))
-#                 if not key.startswith('_')]))
+                 for key in sorted(self.__dict__.keys())
+                 if not key.startswith('_')]))
 
 class Hypervisor(BaseObject):
   """
@@ -88,6 +88,7 @@ class Hypervisor(BaseObject):
     self.role = None
     self.pinset_list = list()
     self.pinset_line = None
+    self.ps_kvm_cpu = defaultdict(int)
     self.ps_pinned_cpu = defaultdict(int)
     self.db_pinned_cpu = defaultdict(int)
     self.db_unused_pin = list()
@@ -130,14 +131,16 @@ class Hypervisor(BaseObject):
     Parse the vcpu_pin_set line from nova.conf
     using nova's parse_cpu_spec() function
     """
+    global errors
     broken = None
     try:
-      oc_pin_set, broken = host.ssh("sudo crudini --get /etc/nova/nova.conf DEFAULT vcpu_pin_set | cat 2>&1")
+      oc_pin_set, broken = self.ssh("sudo crudini --get \$(sudo ls -1t /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf /etc/nova/nova.conf 2>/dev/null | head -1) DEFAULT vcpu_pin_set | cat 2>&1")
       line = "".join(oc_pin_set).rstrip()
       self.pinset_list = parse_cpu_spec(line)
       self.pinset_line = line
     except:
       log.error("[%s] Unable to parse vcpu_pin_set: %s" % (self, line))
+      errors += 1
       pass
     return broken
 
@@ -160,7 +163,7 @@ class Hypervisor(BaseObject):
     instance.instance_id = instance_id
     instance.pid = pid
     instance.ps_pcpus[cpu] += 1
-    self.ps_pinned_cpu[cpu] += 1
+    self.ps_kvm_cpu[cpu] += 1
     self.ps_pid_cpu[pid][cpu] += 1
     self.calc_unused('ps')
     if cpu not in self.pinset_list:
@@ -171,14 +174,14 @@ class Hypervisor(BaseObject):
 
   def check_ps_cpus(self):
     global errors
-    for cpu in self.ps_pinned_cpu:
-      if self.ps_pinned_cpu[cpu] > 1:
-        errors += 1
-        log.debug("[%s] pCPU %s is pinned %s times" % (self, cpu, self.ps_pinned_cpu[cpu]))
-        for i in self.instances:
-          instance = self.instances[i]
-          log.debug("[%s] instance vcpu_pinset %s pcpus %s checking for cpu %s" % (instance.uuid, instance.vcpu_pinset, instance.ps_pcpus, cpu))
-          if cpu in instance.ps_pcpus and not instance.vcpu_pinset:
+    for cpu in self.ps_kvm_cpu:
+      log.debug("[%s] pCPU %s is having %s kvm" % (self, cpu, self.ps_kvm_cpu[cpu]))
+      for i in self.instances:
+        instance = self.instances[i]
+        log.debug("[%s] instance vcpu_pinset %s pcpus %s checking for cpu %s" % (instance.uuid, instance.vcpu_pinset, instance.ps_pcpus, cpu))
+        if cpu in instance.ps_pcpus and not instance.vcpu_pinset:
+          self.ps_pinned_cpu[cpu] += 1
+          if self.ps_kvm_cpu[cpu] > 1:
             if "Some pCPUs are shared" not in instance.errors:
               instance.errors.append("Some pCPUs are shared")
             instance.shared_pcpu.append(str(cpu))
@@ -199,7 +202,7 @@ class Hypervisor(BaseObject):
         uuid = re.search(uuid_rex, command).group(1)
         instance_id = re.search(instance_id_rex, command).group(1)
       except:
-        log.error("[%s] qemu-process didn't have a UUID in its arguments: %s" % (host, l))
+        log.error("[%s] qemu-process didn't have a UUID in its arguments: %s" % (self.name, l))
         uuid = None
         instance_id = None
         pass
@@ -211,17 +214,17 @@ class Hypervisor(BaseObject):
     global errors
     failed = False
     if len(self.ps_pinned_cpu) and not len(self.db_pinned_cpu):
-      log.error("[%s] Found KVM process on host but not in Nova DB" % (host))
+      log.error("[%s] Found KVM process on host but not in Nova DB" % (self.name))
       errors += 1
       failed = True
     if not len(self.ps_pinned_cpu) and len(self.db_pinned_cpu):
-      log.error("[%s] Found pins in Nova DB, but not used by KVM on host" % (host))
+      log.error("[%s] Found pins in Nova DB (%s), but not used by KVM on host (%s)" % (self.name, self.db_pinned_cpu, self.ps_pinned_cpu))
       errors += 1
       failed = True
     if not failed:
       # The dics should be the same on each host.
       if sorted(self.db_pinned_cpu) != sorted(self.ps_pinned_cpu):
-        log.error("[%s] Mismatch between Nova DB and processes on host" % (self))
+        log.error("[%s] Mismatch between Nova DB and processes on host: NovaDB: %s Host: %s" % (self.name, self.db_pinned_cpu, self.ps_pinned_cpu))
         errors += 1
         failed = True
         for cpu in self.db_pinned_cpu:
@@ -298,14 +301,26 @@ disk_size_rex = re.compile('disk size: (.*)')
 AUTH_URL = os.environ['OS_AUTH_URL']
 USERNAME = os.environ['OS_USERNAME']
 PASSWORD = os.environ['OS_PASSWORD']
-PROJECT_NAME = os.environ['OS_TENANT_NAME']
-VERSION = 2
+USER_DOMAIN_NAME = None
+PROJECT_DOMAIN_NAME = None
+if 'OS_TENANT_NAME' in os.environ:
+  PROJECT_NAME = os.environ['OS_TENANT_NAME']
+else:
+  PROJECT_NAME = os.environ['OS_PROJECT_NAME']
+  USER_DOMAIN_NAME = os.environ['OS_USER_DOMAIN_NAME']
+  PROJECT_DOMAIN_NAME = os.environ['OS_PROJECT_DOMAIN_NAME']
 
+VERSION = 2
 
 if __name__ == '__main__': 
   # Preparing the openstack environment
-  log.debug("Poking the undercloud to get list of hypervisors")
-  nova = client.Client(VERSION, USERNAME, PASSWORD, PROJECT_NAME, AUTH_URL, connection_pool=True)
+  log.info("Poking the undercloud to get list of hypervisors %s" % PROJECT_DOMAIN_NAME)
+  nova = client.Client(VERSION, USERNAME, PASSWORD, PROJECT_NAME,
+                      auth_url=AUTH_URL,
+                       connection_pool=True)
+  #                     project_domain_name=PROJECT_DOMAIN_NAME,
+  #                     user_domain_name=USER_DOMAIN_NAME,
+ 
   servers = nova.servers.list(detailed=True)
   
   # We're getting a list of all the hypervisors and their IPs to ssh in later
@@ -327,7 +342,7 @@ if __name__ == '__main__':
   log.debug("[%s] Querying the overcloud DB to get numa topologogy" % controller)
   # Getting the numa topology from the overcloud
   # We have to ssh into the controllers because normally, the mysql process isn't accessible from outside
-  oc_db_data, broken = controller.ssh("sudo mysql -N -s -D nova -u root --password=\$(sudo hiera mysql::server::root_password) -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid where b.deleted = 0;'")
+  oc_db_data, broken = controller.ssh("sudo mysql -N -s -D nova -u root --password=\$(sudo hiera -c /etc/puppet/hiera.yaml mysql::server::root_password) -e 'select node,instance_uuid,vm_state,numa_topology from instance_extra a left join instances b on a.instance_uuid = b.uuid where b.deleted = 0;'")
   if broken:
     log.error("Unable to ssh in the controller")
     sys.exit(1)
