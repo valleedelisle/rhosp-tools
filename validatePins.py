@@ -75,36 +75,26 @@ class BaseObject():
     return "%s(%s)" % (
       (self.__class__.__name__),
       ', '.join(["%s=%r" % (key, getattr(self, key))
-                 for key in sorted(self.__dict__.keys())
-                 if not key.startswith('_')]))
+                 for key in sorted(self.__dict__.keys())]))
+#                 if not key.startswith('_')]))
 
 class Hypervisor(BaseObject):
   """
   Hypervisor object
   """
-  name = None
-  ip = None
-  role = None
-
-  # Pingset config
-  pinset_list = list()
-  pinset_line = None
-
-  # Pinned cpus based on ps or db
-  ps_pinned_cpu = defaultdict(int)
-  db_pinned_cpu = defaultdict(int)
-  db_unused_pin = list()
-  ps_unused_pin = list()
-
-  # Keeping track of which pid on which cpu
-  ps_pid_cpu = defaultdict(lambda: defaultdict(int))
-
-  # Keeping track of instances / host
-  instances = defaultdict()
-
-  # Error list
-  errors = list()
-  def __init__(self, **kwargs):                                                                                                                                                                                                                                                                                                                                                                                                             
+  def __init__(self, **kwargs):
+    self.name = None
+    self.ip = None
+    self.role = None
+    self.pinset_list = list()
+    self.pinset_line = None
+    self.ps_pinned_cpu = defaultdict(int)
+    self.db_pinned_cpu = defaultdict(int)
+    self.db_unused_pin = list()
+    self.ps_unused_pin = list()
+    self.ps_pid_cpu = defaultdict(lambda: defaultdict(int))
+    self.instances = defaultdict()
+    self.errors = list()
     self.__dict__.update(kwargs)
 
   def ssh(self, cmd):
@@ -178,15 +168,20 @@ class Hypervisor(BaseObject):
       instance.outside_pcpu.append(str(cpu))
       if "pCPU outside of pinset" not in instance.errors:
         instance.errors.append("pCPU outside of pinset")
-    if self.ps_pinned_cpu[cpu] > 1:
-      errors += 1
-      log.debug("[%s] pCPU %s is pinned %s times" % (self, cpu, self.ps_pinned_cpu[cpu]))
-      for i in self.instances:
-        instance = self.instances[i]
-        if cpu in instance.ps_cpus:
-          if "Some pCPUs are shared" not in instance.errors:
-            instance.errors.append("Some pCPUs are shared")
-          instance.shared_pcpu.append(str(cpu))
+
+  def check_ps_cpus(self):
+    global errors
+    for cpu in self.ps_pinned_cpu:
+      if self.ps_pinned_cpu[cpu] > 1:
+        errors += 1
+        log.debug("[%s] pCPU %s is pinned %s times" % (self, cpu, self.ps_pinned_cpu[cpu]))
+        for i in self.instances:
+          instance = self.instances[i]
+          log.debug("[%s] instance vcpu_pinset %s pcpus %s checking for cpu %s" % (instance.uuid, instance.vcpu_pinset, instance.ps_pcpus, cpu))
+          if cpu in instance.ps_pcpus and not instance.vcpu_pinset:
+            if "Some pCPUs are shared" not in instance.errors:
+              instance.errors.append("Some pCPUs are shared")
+            instance.shared_pcpu.append(str(cpu))
 
   def get_ps(self):
     """
@@ -238,17 +233,20 @@ class Hypervisor(BaseObject):
 
 
 class Instance(BaseObject):
-  name = None
-  uuid = None
-  state = None
-  db_pcpus = defaultdict(int)
-  ps_pcpus = defaultdict(int)
-  outside_pcpu = list()
-  shared_pcpu = list()
-  disk_size = 0
-  errors = list()
-
-  def __init__(self, **kwargs):                                                                                                                                                                                                                                                                                                                                                                                                             
+  def __init__(self, **kwargs):
+    self.name = None
+    self.uuid = None
+    self.state = None
+    self.db_pcpus = defaultdict(int)
+    self.xml_pcpus = defaultdict(int)
+    self.ps_pcpus = defaultdict(int)
+    self.outside_pcpu = list()
+    self.shared_pcpu = list()
+    self.disk_size = 0
+    self.vcpu_pinset = None
+    self.vcpu_pinset_list = list()
+    self.dumpxml = None
+    self.errors = list()
     self.__dict__.update(kwargs)
 
   def get_host(self):
@@ -257,12 +255,13 @@ class Instance(BaseObject):
   def get_disksize(self):
     self.disk_size = self.get_host().ssh("sudo stat -c %%s /var/lib/nova/instances/%s/disk" % i)[0].rstrip()
 
+  def get_xml(self):
+    self.dumpxml = self.get_host().ssh("sudo virsh dumpxml %s" % self.instance_id)[0]
+
   def get_name(self):
     # Getting instance metadata
-    dumpxml = self.get_host().ssh("sudo virsh dumpxml %s" % self.instance_id)[0]
-    log.debug("[%s] dumpxml: %s" % (self, dumpxml))
     try:
-      self.name = ET.fromstring(dumpxml)\
+      self.name = ET.fromstring(self.dumpxml)\
                     .find('metadata')\
                     .find('nova:instance', nova_ns)\
                     .find('nova:name', nova_ns).text
@@ -270,6 +269,23 @@ class Instance(BaseObject):
       log.error("[%s] Unable to find instance name: %s" % (self, error))
       log.error("%s" % traceback.format_exc())
       pass
+
+  def get_xml_pins(self):
+      try:
+        self.vcpu_pinset = ET.fromstring(self.dumpxml)\
+                           .find('vcpu').attrib['cpuset']
+      except KeyError as error:
+        self.vcpu_pinset = None
+        for item in ET.fromstring(self.dumpxml)\
+                 .find('cputune')\
+                 .iter('vcpupin'):
+          log.debug("[%s] instance pinned on %s" % (self.uuid, item.attrib))
+          self.xml_pcpus[item.attrib['cpuset']] += 1
+        return
+      for cpu in parse_cpu_spec(self.vcpu_pinset):
+        self.vcpu_pinset_list.append(cpu)
+
+
 
 
 # Regex's used for parsing
@@ -323,6 +339,7 @@ if __name__ == '__main__':
     instance = Instance(hypervisor=l[0].split('.')[0], uuid=l[1], state=l[2])
     host = hypervisors[instance.hypervisor]
     host.instances[instance.uuid] = instance
+    log.debug("Creating instance on Host %s Instance %s" % (host.name, instance.uuid))
     try:
       data = json.loads(" ".join(l[3:]))
     except ValueError:
@@ -347,10 +364,8 @@ if __name__ == '__main__':
     sys.exit(0)
   
   #  Looping through all the hypervisors
-  for hostname in hypervisors:
+  for hostname in filter(lambda x: hypervisors[x].role == 'Compute', hypervisors):
     host = hypervisors[hostname]
-    if host.role == 'Controller':
-      continue
     # Getting the pinset configuration in nova.conf
     ssh_failed = host.get_pinset()
     if ssh_failed:
@@ -363,11 +378,14 @@ if __name__ == '__main__':
     host.get_ps()
     # Getting instances' metadata
     for i in host.instances:
+      log.debug("Instance %s on host %s" % (i, host.name))
       instance = host.instances[i]
       instance.get_disksize()
+      instance.get_xml()
       instance.get_name()
-      log.debug("Instance: %s" % (instance))
-    
+      instance.get_xml_pins()
+    # Let's count the cpus
+    host.check_ps_cpus() 
     # Let's make sure we have data on both sides
     host.validate_pin()
     if len(host.db_pinned_cpu):
@@ -380,8 +398,9 @@ if __name__ == '__main__':
   # Outputing some CSV
   if errors:
     print('"%s","%s","%s","%s","%s","%s","%s"' % ("Instance UUID", "Host Name", "Instance Name", "Ephemeral Disk Size", "Shared pCPUs", "Outside pCPUs", "Errors"))
-  for hostname in hypervisors:
+  for hostname in filter(lambda x: hypervisors[x].role == 'Compute', hypervisors):
     host = hypervisors[hostname]
+    log.debug("Hypervisor %s Role: %s # of instances: %s" % (host.name, host.role, len(host.instances)))
     for i in host.instances:
       instance = host.instances[i]
       if len(instance.errors):
