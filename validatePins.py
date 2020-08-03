@@ -41,6 +41,12 @@ from keystoneclient.v3 import client
 from novaclient import client
 from nova.virt.hardware import parse_cpu_spec
 
+# Regex's used for parsing
+controller_rex = re.compile('.*(control|ocld|ctrl).*') # You might have to change this to match your environment. This is how we detect controllers.
+uuid_rex = re.compile('.*-uuid ([^\s]+) ')
+instance_id_rex = re.compile('.*guest=(instance-[a-z0-9]+).*')
+disk_size_rex = re.compile('disk size: (.*)')
+
 # We need to wipe out logger config because of nova.
 import logging
 logging.shutdown()
@@ -169,8 +175,7 @@ class Hypervisor(BaseObject):
     if cpu not in self.pinset_list:
       errors += 1
       instance.outside_pcpu.append(str(cpu))
-      if "pCPU outside of pinset" not in instance.errors:
-        instance.errors.append("pCPU outside of pinset")
+      instance.add_error("pCPU outside of pinset")
 
   def check_ps_cpus(self):
     global errors
@@ -182,8 +187,7 @@ class Hypervisor(BaseObject):
         if cpu in instance.ps_pcpus and not instance.vcpu_pinset:
           self.ps_pinned_cpu[cpu] += 1
           if self.ps_kvm_cpu[cpu] > 1:
-            if "Some pCPUs are shared" not in instance.errors:
-              instance.errors.append("Some pCPUs are shared")
+            instance.add_error("Some pCPUs are shared")
             instance.shared_pcpu.append(str(cpu))
 
   def get_ps(self):
@@ -210,26 +214,45 @@ class Hypervisor(BaseObject):
       if uuid:
         self.ps_pin_cpu(pid, uuid, cpu, instance_id)
 
+  def get_instances_by_cpu(self, cpu):
+    instance_list = list()
+    for i in self.instances:
+      instance = self.instances[i] 
+      if cpu in instance.ps_pcpus:
+        instance_list.append(instance)
+    return instance_list
+      
   def validate_pin(self):
     global errors
     failed = False
+    self.db_pinned_cpu = sorted(self.db_pinned_cpu)
+    self.ps_pinned_cpu = sorted(self.ps_pinned_cpu)
     if len(self.ps_pinned_cpu) and not len(self.db_pinned_cpu):
       log.error("[%s] Found KVM process on host but not in Nova DB" % (self.name))
       errors += 1
       failed = True
+      for cpu in self.ps_pinned_cpu:
+        instances = self.get_instances_by_cpu(cpu)
+        for instance in instances:
+          instance.outside_pcpu.append(str(cpu))
+          instance.add_error("Instance pinned on host but not in Nova DB")
+
     if not len(self.ps_pinned_cpu) and len(self.db_pinned_cpu):
       log.error("[%s] Found pins in Nova DB (%s), but not used by KVM on host (%s)" % (self.name, self.db_pinned_cpu, self.ps_pinned_cpu))
       errors += 1
       failed = True
     if not failed:
       # The dics should be the same on each host.
-      if sorted(self.db_pinned_cpu) != sorted(self.ps_pinned_cpu):
+      if self.db_pinned_cpu != self.ps_pinned_cpu:
         log.error("[%s] Mismatch between Nova DB and processes on host: NovaDB: %s Host: %s" % (self.name, self.db_pinned_cpu, self.ps_pinned_cpu))
         errors += 1
         failed = True
-        for cpu in self.db_pinned_cpu:
-          log.debug("Host %s CPU %s DB Count %s Process count %s" % (self, cpu, self.db_pinned_cpu[cpu], self.ps_pinned_cpu[cpu]))
-    
+        for cpu in self.ps_pinned_cpu:
+          if cpu not in self.db_pinned_cpu:
+            instances = self.get_instances_by_cpu(cpu)
+            for instance in instances:
+              instance.outside_pcpu.append(str(cpu))
+              instance.add_error("Instance using CPU outside of topology")
     return failed
 
 
@@ -251,6 +274,10 @@ class Instance(BaseObject):
     self.dumpxml = None
     self.errors = list()
     self.__dict__.update(kwargs)
+
+  def add_error(self, msg):
+    if msg not in instance.errors:
+      instance.errors.append(msg)
 
   def get_host(self):
     return hypervisors[self.hypervisor]
@@ -291,11 +318,6 @@ class Instance(BaseObject):
 
 
 
-# Regex's used for parsing
-uuid_rex = re.compile('.*-uuid ([^\s]+) ')
-controller_rex = re.compile('.*(control|ocld|ctrl).*')
-instance_id_rex = re.compile('.*guest=(instance-[a-z0-9]+).*')
-disk_size_rex = re.compile('disk size: (.*)')
 
 # Getting undercloud's credentials
 AUTH_URL = os.environ['OS_AUTH_URL']
@@ -304,23 +326,19 @@ PASSWORD = os.environ['OS_PASSWORD']
 USER_DOMAIN_NAME = None
 PROJECT_DOMAIN_NAME = None
 if 'OS_TENANT_NAME' in os.environ:
-  PROJECT_NAME = os.environ['OS_TENANT_NAME']
+  project_dict = {'project_id': os.environ['OS_TENANT_NAME'] }
 else:
-  PROJECT_NAME = os.environ['OS_PROJECT_NAME']
-  USER_DOMAIN_NAME = os.environ['OS_USER_DOMAIN_NAME']
-  PROJECT_DOMAIN_NAME = os.environ['OS_PROJECT_DOMAIN_NAME']
+  project_dict = {'project_name': os.environ['OS_PROJECT_NAME'],
+                  'project_domain_name': os.environ['OS_PROJECT_DOMAIN_NAME'],
+                  'user_domain_name': os.environ['OS_USER_DOMAIN_NAME'] }
 
 VERSION = 2
 
 if __name__ == '__main__': 
   # Preparing the openstack environment
-  log.info("Poking the undercloud to get list of hypervisors %s" % PROJECT_DOMAIN_NAME)
-  nova = client.Client(VERSION, USERNAME, PASSWORD, PROJECT_NAME,
-                      auth_url=AUTH_URL,
-                       connection_pool=True)
-  #                     project_domain_name=PROJECT_DOMAIN_NAME,
-  #                     user_domain_name=USER_DOMAIN_NAME,
- 
+  log.debug("Poking the undercloud to get list of hypervisors")
+  nova = client.Client(VERSION, USERNAME, PASSWORD, auth_url=AUTH_URL, connection_pool=True, **project_dict)
+
   servers = nova.servers.list(detailed=True)
   
   # We're getting a list of all the hypervisors and their IPs to ssh in later
