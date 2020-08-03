@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Copyright (C) 2019 David Vallee Delisle <dvd@redhat.com>
+Copyright (C) 2020 David Vallee Delisle <dvd@redhat.com>
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
