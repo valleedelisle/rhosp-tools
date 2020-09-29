@@ -21,11 +21,16 @@ Format returned is json for ansible ingestion.
 """
 import sys
 import signal
+from os import geteuid
 from re import split, compile
 from json import dumps
 from subprocess import Popen, PIPE
 import xml.etree.ElementTree as ET
 import argparse
+
+if geteuid() > 0:
+  print("Must be run as root")
+  sys.exit(1)
 
 nova_ns = {'nova': 'http://openstack.org/xmlns/libvirt/nova/1.0' }
 
@@ -274,12 +279,17 @@ def run_cmd(cmd):
   if test_mode:
     cmd = "cat " + cmd.replace(' ', '_')
   try:
-    subproc = Popen(cmd, shell=True, stdout=PIPE)
+    subproc = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
   except Exception, e:
-    print "Error executing: %s" % cmd
-    print str(e)
+    print("Error executing: %s" % cmd)
+    print(str(e))
     sys.exit(1)
-  return subproc.stdout.readlines()
+  out, err = subproc.communicate()
+  if subproc.returncode > 0:
+    print("Error executing: %s" % cmd)
+    print("Return code error: [%s] %s" % (subproc.returncode, err))
+    sys.exit(1)
+  return out
 
 
 def parse_mp(md):
