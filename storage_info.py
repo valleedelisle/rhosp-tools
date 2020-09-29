@@ -25,6 +25,7 @@ from re import split, compile
 from json import dumps
 from subprocess import Popen, PIPE
 import xml.etree.ElementTree as ET
+import argparse
 
 nova_ns = {'nova': 'http://openstack.org/xmlns/libvirt/nova/1.0' }
 
@@ -34,6 +35,17 @@ mapper_devices = []
 mp_rex = compile(r'^([a-f0-9]{20,})[\s]+(dm-[0-9]+)[\s]+.*')
 lsblk_rex = compile(r'.*-(md[0-9]{2,4})[\s]+.*')
 vlist_rex = compile(r'.*(instance-[0-9a-z]+)[\s]+.*')
+
+def parse_args():
+  """
+  Function to parse arguments
+  """
+  parser = argparse.ArgumentParser(description='storage information returned in json')
+  parser.add_argument('--live',
+                      action='store_true',
+                      default=False,
+                      help='Runs the actual live commands')
+  return parser.parse_args()
 
 class Dmapper(object):
   """
@@ -323,6 +335,10 @@ def main():
     """
        Main code block
     """
+    global test_mode
+    args = parse_args()
+    if args.live:
+      test_mode = False
     mdstat = '/proc/mdstat'
     if test_mode:
       mdstat = 'mdstats'
