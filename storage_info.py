@@ -37,9 +37,11 @@ nova_ns = {'nova': 'http://openstack.org/xmlns/libvirt/nova/1.0' }
 test_mode = True
 
 mapper_devices = []
+used_mds = []
 mp_rex = compile(r'^([a-f0-9]{20,})[\s]+(dm-[0-9]+)[\s]+.*')
 lsblk_rex = compile(r'.*-(md[0-9]{2,4})[\s]+.*')
 vlist_rex = compile(r'.*(instance-[0-9a-z]+)[\s]+.*')
+mp_failure = False
 
 def parse_args():
   """
@@ -50,6 +52,11 @@ def parse_args():
                       action='store_true',
                       default=False,
                       help='Runs the actual live commands')
+  parser.add_argument('--check-health',
+                      action='store_true',
+                      default=False,
+                      help='Returns a failure if multipath looks unhealthy')
+
   return parser.parse_args()
 
 class Dmapper(object):
@@ -59,7 +66,7 @@ class Dmapper(object):
   def __init__(self, dm_name, mp_name, md):
     self.dm_name = dm_name
     self.mp_name = mp_name
-    self.blocks = {}
+    self.blocks = []
     self.md_devices = []
     self.instances = []
     self.lsblk(md)
@@ -76,7 +83,10 @@ class Dmapper(object):
     for line in run_cmd("lsblk -t"):
       m = lsblk_rex.match(line)
       if m:
-        self.md_devices.append({ m.group(1): md.get_stats()['arrays'][m.group(1)] })
+        md_dev = m.group(1)
+        self.md_devices.append({ md_dev: md.get_stats()['arrays'][md_dev] })
+        if md_dev not in used_mds:
+          used_mds.append(md_dev)
 
 class MdStat(object):
     """
@@ -277,7 +287,7 @@ def gexit(signum, frame):
 def run_cmd(cmd):
   signal.signal(signal.SIGINT, gexit)
   if test_mode:
-    cmd = "cat " + cmd.replace(' ', '_')
+    cmd = "cat /home/heat-admin/" + cmd.replace(' ', '_')
   try:
     subproc = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
   except Exception, e:
@@ -288,14 +298,16 @@ def run_cmd(cmd):
   if subproc.returncode > 0:
     print("Error executing: %s" % cmd)
     print("Return code error: [%s] %s" % (subproc.returncode, err))
+    print(out)
     sys.exit(1)
-  return out
+  return out.splitlines()
 
 
 def parse_mp(md):
   """
   Parse multipath -ll to get the list of mapper and sd devices
   """
+  global mp_failure
   for line in run_cmd("multipath -v4 -ll"):
     m = mp_rex.match(line)
     if m:
@@ -304,10 +316,16 @@ def parse_mp(md):
         mapper_devices.append(dm)
     elif ' |-' in line or ' `-' in line:
       block = line.split()[-5]
-      dm.blocks[block] = {'maj_min': line.split()[-4],
-                          'dm_status': line.split()[-3],
-                          'path_status': line.split()[-2],
-                          'admin_status': line.split()[-1] }
+      block_dict = {'block_name': block,
+                    'maj_min': line.split()[-4],
+                    'dm_status': line.split()[-3],
+                    'path_status': line.split()[-2],
+                    'admin_status': line.split()[-1] }
+      dm.blocks.append(block_dict)
+      if (block_dict['dm_status'] != 'active' or
+          block_dict['path_status'] != 'ready' or
+          block_dict['admin_status'] != 'running'):
+        mp_failure = True
 
 def get_vms():
   """
@@ -346,17 +364,21 @@ def main():
        Main code block
     """
     global test_mode
+    global mp_failure
     args = parse_args()
     if args.live:
       test_mode = False
     mdstat = '/proc/mdstat'
     if test_mode:
-      mdstat = 'mdstats'
+      mdstat = '/home/heat-admin/mdstats'
     md = MdStat(path=mdstat)
     parse_mp(md)
     for vm in get_vms():
       get_vm_data(vm)
-    print(dumps([dm.__dict__ for dm in mapper_devices]))
+    unused_mds = list(set(md.arrays()).difference(used_mds))
+    print(dumps({'used_mds': used_mds, 'unused_mds': unused_mds, 'device_mappers': [dm.__dict__ for dm in mapper_devices]}))
+    if mp_failure and args.check_health:
+      sys.exit(1)
 
 if __name__ == "__main__":
     main()

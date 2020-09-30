@@ -1,0 +1,28 @@
+- hosts: all
+  name: Verifying md raids and multipath devices
+  become: true
+  gather_facts: false
+  tasks:  
+  - name: Running storage info script
+    script: storage_info.py --live
+    register: storage
+  - set_fact:
+      storage_json: "{{ storage.stdout | from_json }}"
+  - name: "Failed multipath devices"
+    debug:
+      msg: "{{ item }}"
+    with_items: "{{ storage_json | json_query('device_mappers[].blocks[]') }}"
+    when: >
+      (item.dm_status != 'active' or
+       item.path_status != 'ready' or
+       item.admin_status != 'running')
+    failed_when: >
+      (item.dm_status != 'active' or
+       item.path_status != 'ready' or
+       item.admin_status != 'running')
+    ignore_errors: True
+  - name: "Hosts with MD RAID devices"
+    debug:
+      msg: "{{ storage_json }}"
+    failed_when: storage_json.used_mds|length > 0 or storage_json.unused_mds|length > 0
+    when: storage_json.used_mds|length > 0 or storage_json.unused_mds|length > 0
