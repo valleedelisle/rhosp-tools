@@ -26,11 +26,14 @@
 #  stack@undercloud $ ./validate_resize.sh
 #
 
+set -ex
+# We need to adjust to create the ports if we want to try SR-IOV
 NET_NAME=admin-tenant-overlay
 AZ=ess-az1
 SSH_KEY=ess-key
-IMAGEFOLDER=${HOME}/images
-CIRROSFILE=cirros-0.3.0-x86_64-disk.img
+IMAGE_NAME=cirros
+IMAGE_FOLDER=${HOME}/images
+CIRROS_FILE=cirros-0.3.0-x86_64-disk.img
 
 function get_xmldump() {
   dump_label=$1
@@ -40,12 +43,15 @@ function get_xmldump() {
   done
 }
 
-if ! openstack image show cirros; then
-  mkdir -p $IMAGEFOLDER
-  curl --ipv4 -o ${IMAGEFOLDER}/$CIRROSFILE "https://launchpad.net/cirros/trunk/0.3.0/+download/$CIRROSFILE"
-  openstack image create --file ${IMAGEFOLDER}/$CIRROSFILE --unprotected --public  --disk-format qcow2 cirros
+if ! openstack image show $IMAGE_NAME; then
+  mkdir -p $IMAGE_FOLDER
+  curl --ipv4 -o ${IMAGE_FOLDER}/$CIRROS_FILE "https://launchpad.net/cirros/trunk/0.3.0/+download/$CIRROS_FILE"
+  openstack image create --file ${IMAGE_FOLDER}/$CIRROS_FILE --unprotected --public  --disk-format qcow2 $IMAGE_NAME
 fi
 
+if ! openstack keypair show $SSH_KEY; then
+  openstack keypair create --private-key ${SSH_KEY}.key ${SSH_KEY}
+fi
 if ! openstack flavor show ess-small; then
   openstack flavor create ess-small --ram 4096 --disk 10 --vcpus 2
 fi
@@ -64,14 +70,14 @@ if openstack server show ess-require; then
   openstack server delete ess-require 
 fi
 
-openstack server create --image cirros \
+openstack server create --image $IMAGE_NAME \
                         --flavor ess-small-isolate \
                         --nic net-id=$NET_NAME \
                         --availability-zone $AZ \
                         --key-name $SSH_KEY \
                         ess-isolate \
                         --wait
-openstack server create --image cirros \
+openstack server create --image $IMAGE_NAME \
                         --flavor ess-small-require \
                         --nic net-id=$NET_NAME \
                         --availability-zone $AZ \
