@@ -211,6 +211,16 @@ while [ "$ITERATIONS" != 0 ]; do
         echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sctp-snmp"
         cat /proc/net/sctp/snmp >> "$HOSTNAME-network_stats_$now/sctp-snmp"
     fi
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_dump-conntracks"
+    ovs-appctl bridge/dump-conntracks alubr0 >> "$HOSTNAME-network_stats_$now/nuage_dump-conntracks"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-drop"
+    ovs-dpctl dump-flows | grep drop >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-drop"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-ssh"
+    ovs-dpctl dump-flows | grep ":22"  >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-ssh"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_ukey-stats-list"
+    ovs-appctl ukey_stats_list_info/show >> "$HOSTNAME-network_stats_$now/nuage_ukey-stats-list"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_upcall-conntrack"
+    ovs-appctl upcall/show conntrack -L >> "$HOSTNAME-network_stats_$now/nuage_upcall-conntrack"
     if [ "$ITERATIONS" -gt 0 ]; then let ITERATIONS-=1; fi
     # Wait till background jobs are finished
     wait
