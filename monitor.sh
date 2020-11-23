@@ -219,8 +219,11 @@ while [ "$ITERATIONS" != 0 ]; do
     ovs-dpctl dump-flows | grep ":22"  >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-ssh"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_ukey-stats-list"
     ovs-appctl ukey_stats_list_info/show >> "$HOSTNAME-network_stats_$now/nuage_ukey-stats-list"
-    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_upcall-conntrack"
-    ovs-appctl upcall/show conntrack -L >> "$HOSTNAME-network_stats_$now/nuage_upcall-conntrack"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_upcall"
+    ovs-appctl upcall/show >> "$HOSTNAME-network_stats_$now/nuage_upcall"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/conntrack_list"
+    conntrack -L >> "$HOSTNAME-network_stats_$now/conntrack_list"
+ 
     if [ "$ITERATIONS" -gt 0 ]; then let ITERATIONS-=1; fi
     # Wait till background jobs are finished
     wait
