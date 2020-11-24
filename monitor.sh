@@ -223,6 +223,7 @@ while [ "$ITERATIONS" != 0 ]; do
     ovs-appctl upcall/show >> "$HOSTNAME-network_stats_$now/nuage_upcall"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/conntrack_list"
     conntrack -L >> "$HOSTNAME-network_stats_$now/conntrack_list"
+    /usr/lib64/sa/sa1 1 1
  
     if [ "$ITERATIONS" -gt 0 ]; then let ITERATIONS-=1; fi
     # Wait till background jobs are finished
