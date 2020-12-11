@@ -17,7 +17,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 ### Description:
 Simple script to interact with the ironic api
-Tested in Wallaby
 
 This was written tested on TripleO OpenStack Wallaby
 
