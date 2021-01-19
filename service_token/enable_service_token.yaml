@@ -1,0 +1,16 @@
+#  source stackrc && tripleo-ansible-inventory --list > ansible-inventory.json
+- hosts: Compute,Controller
+  gather_facts: no
+  become: yes
+  tasks:
+  - name: running bash script
+    script: enable_service_token.sh
+    register: output
+  - name: output
+    debug:
+      var: output.stdout_lines
+  - name: bounce nova
+    shell: docker restart $(docker ps --filter name=nova -q)
+  - name: bounce cinder
+    shell: docker restart $(docker ps --filter name=cinder -q)
+    ignore_errors: yes
