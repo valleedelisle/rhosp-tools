@@ -34,7 +34,7 @@ if geteuid() > 0:
 
 nova_ns = {'nova': 'http://openstack.org/xmlns/libvirt/nova/1.0' }
 
-test_mode = True
+test_mode = False
 
 mapper_devices = []
 used_mds = []
