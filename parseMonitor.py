@@ -210,30 +210,47 @@ def parse_args():
                       dest='show_progress',
                       default=show_progress,
                       help='Show progressbar during parsing')
+  parser.add_argument('--convert',
+                      action='store_true',
+                      dest='convert',
+                      default=False,
+                      help='Convert packets to kpps and bytes to Mbps')
+
   parser.add_argument('-t', '--type',
                       action='store',
                       dest='type',
-                      choices=('ss', 'ps', 'sysstat', 'interrupts', 'netdev'),
+                      choices=('ss', 'ps', 'sysstat', 'interrupts', 'netdev', 'softnet'),
                       type=str,
                       help='File type getting parsed')
   parser.add_argument('files', nargs='+', action='store')
   ss = parser.add_argument_group('ss')
   interrupts = parser.add_argument_group('interrupts')
   netdev = parser.add_argument_group('netdev')
+  softnet = parser.add_argument_group('softnet')
   ps = parser.add_argument_group('ps')
   sysstat = parser.add_argument_group('sysstat')
+  softnet.add_argument('--softnet-fields',
+                  nargs='+',
+                  dest='sn_fields',
+                  default=softnet_attributes,
+                  help='Softnet Fields to display')
+  softnet.add_argument('--softnet-delta-fields',
+                  nargs='+',
+                  dest='sn_delta_fields',
+                  default=softnet_attributes,
+                  help='Softnet Fields to calculate delta on')
   netdev.add_argument('--netdev-fields',
                   nargs='+',
                   dest='nd_fields',
                   default=netdev_attributes,
                   help='Fields to display')
   netdev.add_argument('--netdev-delta-field',
-                  action='store',
-                  dest='nd_delta_field',
-                  default='rx_errs',
+                  nargs='+',
+                  dest='nd_delta_fields',
+                  default=['rx_bytes', 'tx_bytes'],
                   help='Fields to calculate delta on')
   parser.add_argument('--cpu',
-                  action='append',
+                  nargs='+',
                   help='Show data for these cores')
   ss.add_argument('--socket-details',
                   action='store_true',
@@ -340,6 +357,7 @@ socket_base_attributes = ['net_id', 'state', 'local_addr', 'local_port', 'peer_a
 #socket_bad_delta = ['sock_drop', 'recv_q', 'send_q', 'ato', 'rto' ]
 socket_bad_delta = ['rmem_alloc', 'read_buffer', 'wmem_alloc', 'snd_buff', 'fwd_alloc', 'wmem_queued', 'opt_mem', 'back_log', 'sock_drop' ]
 netdev_attributes = ['rx_bytes', 'rx_packets', 'rx_errs', 'rx_drop', 'rx_fifo', 'rx_frame', 'rx_compressed', 'multicast', 'tx_bytes', 'tx_packets', 'tx_errs', 'tx_drop', 'tx_fifo', 'tx_colls', 'tx_carrier', 'tx_compressed']
+softnet_attributes = ['cpu_collision', 'flow_limit_count', 'packet_drops', 'packet_process', 'received_rps', 'time_squeeze']
 
 def convert_to_bits(size):
   u = re.search(unitRex, size)
@@ -466,10 +484,87 @@ class Sysstat(ReprBase):
       self.name = s.group(1)
       self.value = int(s.group(2))
       previous_event = filter_previous_events(self, "name")
+      self.previous_event_time = None
       self.diff = 0
       if previous_event:
         self.diff = self.value - previous_event.value
+        self.previous_event_time = previous_event.time_read
     return
+
+class SoftnetCpu(ReprBase):
+    """
+    Class to represent a softnet_stats cpu reading
+    """
+    def __init__(self, time, args, cpu, **kw):
+      self.time_read = time
+      self.cpu = cpu
+      self.__dict__.update(kw)
+      previous_event = filter_previous_events(self, "cpu")
+      self.previous_event_time = None
+      self.diff = 0
+      self.diffs = {}
+      if previous_event:
+        self.diff = int(getattr(self, args.sn_delta_fields[0])) - int(getattr(previous_event, args.sn_delta_fields[0]))
+        self.previous_event_time = previous_event.time_read
+        for field in args.sn_delta_fields:
+          self.diffs[field] = int(getattr(self, field)) - int(getattr(previous_event, field))
+          if args.convert:
+            if "packet" in field:
+               setattr(self, field, round(int(getattr(self, field) / 1024), 2))
+               number_of_seconds = (self.time_read - self.previous_event_time).total_seconds()
+               self.diffs[field] = round((getattr(self, field) - getattr(previous_event, field)) / number_of_seconds, 2)
+
+class SoftnetStats(ReprBase):
+    """
+    Class to parse and represent softnet_stats blob
+    """
+    def __init__(self, time, args, content):
+        """ Total number of CPUs listed in the stats records"""
+        self.cpu_instances = 0
+
+        """ List of network stats per cpu instace """
+        self.cpu_nstats = []
+        self.time_read = time
+        for idx, line in enumerate(content.split('\n')):
+            if not len(line):
+              continue
+            stats = [int(st, 16) for st in line.split(None)]
+            self.cpu_nstats.append(SoftnetCpu(time, args, idx, **{
+                'packet_process': stats[0],
+                'packet_drops': stats[1],
+                'time_squeeze': stats[2],
+                'cpu_collision': stats[7],
+                'received_rps': stats[8],
+                'flow_limit_count': stats[9]
+            }))
+        self.cpu_instances = len(self.cpu_nstats)
+
+    def per_cpu_nstat(self, key):
+        """
+        Get network stats per column for all cpu.
+        Arguments:
+            (str): Column name for eg. packet_drops or received_rps.
+        Returns:
+            (list): Column states per cpu.
+        """
+        if not self.cpu_nstats:
+            return []
+
+        if key not in self.cpu_nstats[0]:
+            return []
+
+        return [cpu[key] for cpu in self.cpu_nstats]
+
+    @property
+    def is_packet_drops(self):
+        """
+        It will check for if there is packet drop occurred on any cpu.
+        Arguments:
+            None: No input argument for the function
+        Returns:
+            (bool): It will return True if observed packet drops.
+        """
+        return any(cpu["packet_drops"] > 0 for cpu in self.cpu_nstats)
 
 class Netdev(ReprBase):
   """
@@ -481,8 +576,13 @@ class Netdev(ReprBase):
       self.__dict__.update(kw)
       previous_event = filter_previous_events(self, "iface")
       self.diff = 0
+      self.previous_event_time = None
+      self.diffs = {}
       if previous_event:
-        self.diff = int(getattr(self, args.nd_delta_field)) - int(getattr(previous_event, args.nd_delta_field))
+        self.diff = int(getattr(self, args.nd_delta_fields[0])) - int(getattr(previous_event, args.nd_delta_fields[0]))
+        self.previous_event_time = previous_event.time_read
+        for field in args.nd_delta_fields:
+          self.diffs[field] = int(getattr(self, field)) - int(getattr(previous_event, field))
  
 class Interrupt(ReprBase):
   """
@@ -499,6 +599,7 @@ class Interrupt(ReprBase):
       previous_event = filter_previous_events(self, "id")
       self.diff = 0
       if previous_event:
+        self.previous_event_time = previous_event.time_read
         self.diff = self.value - previous_event.value
 
  
@@ -561,6 +662,8 @@ def main():
   time_metadata = defaultdict()
   full_list = list()
   current_list = list()
+  if args.type == "softnet":
+    content = ""
   if args.type == "ss":
     socket_keys = defaultdict()
   time = None
@@ -582,6 +685,10 @@ def main():
         current_list = list()
         if args.type == "ss":
           time_metadata[time] = defaultdict(int)
+        elif args.type == "softnet":
+          if len(content):
+            current_list.extend(SoftnetStats(time, args, content).cpu_nstats)
+            content = ""
       elif time:
         if args.type == "sysstat":
           sysstat = Sysstat(time, line, args)
@@ -613,6 +720,8 @@ def main():
           iface = line_split.pop(0).strip(':')
           attr = dict(zip(netdev_attributes, map(int, line_split)))
           current_list.append(Netdev(time, iface, args, **attr))
+        elif args.type == "softnet":
+          content += line
         elif args.type == "interrupts":
           line_split = line.split()
           if "CPU0" in line_split and "CPU1" in line_split:
@@ -704,29 +813,108 @@ def main():
       if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
           ((args.nonzero_delta is True and s.diff > 0) or args.nonzero_delta is False) and
           (s.diff >= args.min_delta)):
-        print("%s %s %s (%s)" % (s.time_read, s.name, s.value, s.diff))
+        converted = 0
+        if s.previous_event_time:
+            number_of_seconds = (s.time_read - s.previous_event_time).total_seconds()
+        if re.match(r'.*(\.|_)bytes', s.name):
+            s.value = round(s.value * 8 / 1024 / 1024, 2)
+            s.diff = round(s.diff * 8 / 1024 / 1024, 2)
+            if s.previous_event_time:
+              converted = round(s.diff / number_of_seconds, 2)
+              unit = "Mbits/s"
+        if s.name.endswith('packets'):
+          converted = round(s.diff / number_of_seconds, 2)
+          unit = "pps"
+        percent_diff = 0
+        if s.value > 0:
+            percent_diff = round(s.diff / s.value * 100, 2)
+        if percent_diff > 0:
+            if not converted:
+              print("%s %s %s (%s) %s%%" % (s.time_read, s.name, s.value, s.diff, percent_diff))
+            else:
+              print("%s %s %s %s %s%%" % (s.time_read, s.name, converted, unit, percent_diff))
 
+  if args.type == "softnet":
+    table = PrettyTable()
+    print_header = True
+    fields = list()
+    table.field_names = ["Time", "CPU"] + args.sn_fields + list(map(lambda s: f"{s}_delta", args.sn_delta_fields))
+    for s in full_list:
+      if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
+          ((args.nonzero_delta is True and any(s.diffs[k] for k in args.sn_delta_fields if s.diffs.get(k, 0) > args.min_delta)) or args.nonzero_delta is False)):
+          row = [s.time_read, s.cpu]
+          for k in args.sn_fields:
+            value = getattr(s, k)
+            row.append(value)
+          for k in args.sn_delta_fields:
+            value = s.diffs.get(k, 0)
+            row.append(value)
+          table.add_row(row)
+    print(table)
   if args.type == "interrupts":
+    headers = []
+    results = {}
+    table = PrettyTable()
     for s in full_list:
       if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
           ((args.nonzero_delta is True and s.diff > 0) or args.nonzero_delta is False) and
           (s.diff >= args.min_delta)):
-        print("%s CPU%s / %s %s %s %s (%s)" % (s.time_read, s.cpu, s.number, s.type1, s.type2, s.value, s.diff))
+        header = f"{s.number}|{s.type1}|{'/'.join(s.type2)}"
+        if m := re.match(r'((?P<driver>[^-]+)-)*(?P<nic>[^-]+)-(rx|tx|TxRx)-(?P<tx_rx>[0-9]+)', '/'.join(s.type2)):
+            header = m.group('nic')
+        if header not in headers:
+          headers.append(header)
+        if s.time_read not in results:
+          results[s.time_read] = {}
+        if s.cpu not in results[s.time_read]:
+          results[s.time_read][s.cpu] = {}
+        if header not in results[s.time_read][s.cpu]:
+          results[s.time_read][s.cpu][header] = {
+            'value': 0,
+            'diff': 0,
+          }
+        results[s.time_read][s.cpu][header]['value'] += s.value
+        results[s.time_read][s.cpu][header]['diff'] += s.diff
+    table.field_names = ["Time", "CPU"] + headers
+    for time, cpu_data in results.items():
+      for cpu, header_data in cpu_data.items():
+        row = [time, cpu]
+        for header in headers:
+          if header in header_data:
+            data = header_data.get(header)
+            row.append(f"{data['value']} ({data['diff']})")
+          else:
+            row.append(0)
+        table.add_row(row)
+    print(table)
   if args.type == "netdev":
     table = PrettyTable()
     print_header = True
     fields = list()
-    print(args.nd_fields)
-    table.field_names = ["Time", "Iface"] + args.nd_fields + ['delta']
-
+    table.field_names = ["Time", "Iface"] + args.nd_fields + list(map(lambda s: f"{s}_delta", args.nd_delta_fields))
     for s in full_list:
       if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
           ((args.nonzero_delta is True and s.diff > 0) or args.nonzero_delta is False) and
           (s.diff >= args.min_delta)):
           row = [s.time_read, s.iface]
+          number_of_seconds = 1
+          if s.previous_event_time:
+              number_of_seconds = (s.time_read - s.previous_event_time).total_seconds()
           for k in args.nd_fields:
-            row.append(getattr(s, k))
-          table.add_row(row+[str(s.diff)])
+            value = getattr(s, k)
+            if k.endswith('_bytes'):
+              value = round(value * 8 / 1024 / 1024 / number_of_seconds, 2)
+            if k.endswith('_packets'):
+              value = round(value / number_of_seconds, 2)
+            row.append(value)
+          for k in args.nd_delta_fields:
+            value = s.diffs.get(k, 0)
+            if k.endswith('_bytes'):
+              value = round(value * 8 / 1024 / 1024 / number_of_seconds, 2)
+            if k.endswith('_packets') or k.endswith('_drop'):
+              value = round(value / number_of_seconds, 2)
+            row.append(value)
+          table.add_row(row)
     print(table)
 
   if args.type == "ss":
