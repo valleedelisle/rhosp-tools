@@ -105,11 +105,17 @@ while getopts ":d:i:ph" OPT; do
     esac
 done
 
-if [ -z "$SS_OPTS" ] ; then
-    if ! ss -S 2>&1 | grep -q "invalid option"; then
-        REAL_SS_OPTS+="S"
-    fi
-fi
+#
+# Removed default addition of -S for ss options due to
+# https://bugzilla.redhat.com/show_bug.cgi?id=1982804
+# which causes ss coredump in RHEL8.0 - RHEL8.4. when there
+# are active SCTP associations
+# 
+#if [ -z "$SS_OPTS" ] ; then
+#    if ! ss -S 2>&1 | grep -q "invalid option"; then
+#        REAL_SS_OPTS+="S"
+#    fi
+#fi
 
 ## reporting
 
@@ -177,6 +183,8 @@ while [ "$ITERATIONS" != 0 ]; do
     eval "ss $REAL_SS_OPTS" >> "$HOSTNAME-network_stats_$now/ss"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/interrupts"
     cat /proc/interrupts >> "$HOSTNAME-network_stats_$now/interrupts"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/meminfo"
+    cat /proc/meminfo >> "$HOSTNAME-network_stats_$now/meminfo"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/softnet_stat"
     cat /proc/net/softnet_stat >> "$HOSTNAME-network_stats_$now/softnet_stat"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/vmstat"
@@ -184,7 +192,7 @@ while [ "$ITERATIONS" != 0 ]; do
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/ps"
     ps -alfe >> "$HOSTNAME-network_stats_$now/ps"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/ps_extended"
-    ps -o cpuid,psr,lwp,pid,ppid,policy,min_flt,maj_flt,blocked,f,pri,nice,etimes,stat,pcpu,pmem,vsize,bsdtime,comm,cmd -eL >> "$HOSTNAME-network_stats_$now/ps_extended"
+    ps -o cpuid,pid,lwp,pri,nice,stat,pcpu,pmem,vsize,bsdtime,comm,cmd -eL >> "$HOSTNAME-network_stats_$now/ps_extended"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/mpstat"
     eval mpstat -A "$DELAY" 1 2>/dev/null >> "$HOSTNAME-network_stats_$now/mpstat" &
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/top"
@@ -204,27 +212,23 @@ while [ "$ITERATIONS" != 0 ]; do
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/netdev"
     cat /proc/net/dev >> "$HOSTNAME-network_stats_$now/netdev"
     for DEV in $(ip a l | grep mtu | awk '{print $2}' | awk -F ":" '{print $1}'); do echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/ethtool_$DEV"; ethtool -S "$DEV" >> "$HOSTNAME-network_stats_$now/ethtool_$DEV" 2>/dev/null; done
-    for DEV in $(ip a l | grep mtu | awk '{print $2}' | awk -F ":" '{print $1}'); do echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sys_statistics_$DEV"; find /sys/devices/ -type f | grep "/net/$DEV/statistics" | xargs grep . | awk -F "/" '{print $NF}' >> "$HOSTNAME-network_stats_$now/sys_statistics_$DEV"; done
+    for DEV in $(ip a l | grep mtu | awk '{print $2}' | awk -F ":" '{print $1}'); do echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sys_statistics_$DEV"; find /sys/class/net/${DEV}/statistics/ -type f 2>/dev/null | xargs grep . | awk -F "/" '{print $NF}' >> "$HOSTNAME-network_stats_$now/sys_statistics_$DEV"; done
     if [ -e /proc/net/sctp ]; then
         echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sctp-assocs"
         cat /proc/net/sctp/assocs >> "$HOSTNAME-network_stats_$now/sctp-assocs"
         echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sctp-snmp"
         cat /proc/net/sctp/snmp >> "$HOSTNAME-network_stats_$now/sctp-snmp"
     fi
-    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_dump-conntracks"
-    ovs-appctl bridge/dump-conntracks alubr0 >> "$HOSTNAME-network_stats_$now/nuage_dump-conntracks"
-    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-drop"
-    ovs-dpctl dump-flows | grep drop >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-drop"
-    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-ssh"
-    ovs-dpctl dump-flows | grep ":22"  >> "$HOSTNAME-network_stats_$now/nuage_dump-flows-ssh"
-    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_ukey-stats-list"
-    ovs-appctl ukey_stats_list_info/show >> "$HOSTNAME-network_stats_$now/nuage_ukey-stats-list"
-    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/nuage_upcall"
-    ovs-appctl upcall/show >> "$HOSTNAME-network_stats_$now/nuage_upcall"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/conntrack_list"
     conntrack -L >> "$HOSTNAME-network_stats_$now/conntrack_list"
-    /usr/lib64/sa/sa1 1 1
- 
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sa1"
+    /usr/lib64/sa/sa1 1 1 >> "$HOSTNAME-network_stats_$now/sa1"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/iostat"
+    iostat -Ntmx 1 2 >> "$HOSTNAME-network_stats_$now/iostat"
+    #echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/pmd_rxq_show"
+    #ovs-appctl dpif-netdev/pmd-rxq-show >> "$HOSTNAME-network_stats_$now/pmd_rxq_show"
+    #echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/pmd_stats_show"
+    #ovs-appctl dpif-netdev/pmd-stats-show >> "$HOSTNAME-network_stats_$now/pmd_stats_show"
     if [ "$ITERATIONS" -gt 0 ]; then let ITERATIONS-=1; fi
     # Wait till background jobs are finished
     wait
