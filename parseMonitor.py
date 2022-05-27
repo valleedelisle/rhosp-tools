@@ -21,6 +21,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 Script to parse the monitor.sh output
 https://access.redhat.com/articles/1311173#monitorsh-script-3
 
+Normally, when I need to update this script, the brown matter has
+already hit the spinning paddles. Some shortcuts were taken because
+I happen to need some of the data NOW. There's a lot of things that
+should be rewritten, or rethought.
+
 ===============================================================
 ps information:
 
@@ -31,7 +36,7 @@ grab everything. We need to use a loop similar to this to parse the
 TIMESTAMP=$(date +%F_%H%M%S)
 while true; do
  echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> process_list-$(hostname -s)-${TIMESTAMP}.log
- ps -o cpuid,psr,lwp,pid,ppid,policy,min_flt,maj_flt,blocked,f,pri,nice,start_time,etimes,stat,pcpu,pmem,vsize,bsdtime,comm,cmd -eL >> process_list-$(hostname -s)-${TIMESTAMP}.log
+ ps -o cpuid,pid,lwp,pri,nice,stat,pcpu,pmem,vsize,bsdtime,comm,cmd -eL >> process_list-$(hostname -s)-${TIMESTAMP}.log
  sleep 3
 done
 ~~~
@@ -42,7 +47,7 @@ INSTANCE_NAME=instance-xxxxxx
 TIMESTAMP=$(date +%F_%H%M%S)
 while true; do
  echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> process_list-$(hostname -s)-${TIMESTAMP}.log
- ps -o cpuid,psr,lwp,pid,ppid,policy,min_flt,maj_flt,blocked,f,pri,nice,start_time,etimes,stat,pcpu,pmem,vsize,bsdtime,comm,cmd -eL | grep -P "^[\s]*($(virsh vcpuinfo $INSTANCE_NAME | grep -oP '^CPU:[\s]+\K[0-9]+' | tr '\n' '|' | sed 's/|$//'))[\s]+" >> process_list-$(hostname -s)-${TIMESTAMP}.log
+ ps -o cpuid,pid,lwp,pri,nice,stat,pcpu,pmem,vsize,bsdtime,comm,cmd -eL | grep -P "^[\s]*($(virsh vcpuinfo $INSTANCE_NAME | grep -oP '^CPU:[\s]+\K[0-9]+' | tr '\n' '|' | sed 's/|$//'))[\s]+" >> process_list-$(hostname -s)-${TIMESTAMP}.log
  sleep 3
 done
 ~~~
@@ -184,6 +189,7 @@ Definition of various skmem flags:
 """
 import sys
 import re
+from copy import deepcopy
 from datetime import datetime
 from collections import defaultdict
 from prettytable import PrettyTable
@@ -219,7 +225,7 @@ def parse_args():
   parser.add_argument('-t', '--type',
                       action='store',
                       dest='type',
-                      choices=('ss', 'ps', 'sysstat', 'interrupts', 'netdev', 'softnet'),
+                      choices=('ss', 'ps', 'sysstat', 'interrupts', 'netdev', 'softnet', 'conntrack'),
                       type=str,
                       help='File type getting parsed')
   parser.add_argument('files', nargs='+', action='store')
@@ -249,6 +255,14 @@ def parse_args():
                   dest='nd_delta_fields',
                   default=['rx_bytes', 'tx_bytes'],
                   help='Fields to calculate delta on')
+  netdev.add_argument('--sum-by-time',
+                  action='store_true',
+                  default=False,
+                  help='Aggregate by time instead of interface')
+  netdev.add_argument('--sum-by-types',
+                  action='store_true',
+                  default=False,
+                  help='Add type sum columns')
   parser.add_argument('--cpu',
                   nargs='+',
                   help='Show data for these cores')
@@ -277,6 +291,12 @@ def parse_args():
                   dest='show_top_per_pid',
                   default=False,
                   help='Show detailed top processes')
+  ps.add_argument('--track-pid',
+                  action='store',
+                  dest='track_pid',
+                  default=0,
+                  type=int,
+                  help='Track a PID')
   ps.add_argument('--match',
                   action='store',
                   dest='process_match',
@@ -315,18 +335,18 @@ def parse_args():
                        action='store_true',
                        dest='nonzero_value',
                        default=False,
-                       help='Only show nonzero values (works for sysstat, ss and interrupts)')
+                       help='Only show nonzero values (works for sysstat, ss, netdev and interrupts)')
   parser.add_argument('--nonzero-delta',
                        action='store_true',
                        dest='nonzero_delta',
                        default=False,
-                       help='Only show nonzero delta (works for sysstat, ss and interrupts)')
+                       help='Only show nonzero delta (works for sysstat, ss, netdev and interrupts)')
   parser.add_argument('--min-delta',
                        action='store',
                        dest='min_delta',
                        default=0,
                        type=int,
-                       help='Only show deltas with min value (works for sysstat, ss and interrupts)')
+                       help='Only show deltas with min value (works for sysstat, ss, netdev and interrupts)')
 
   return parser.parse_args()
 
@@ -346,7 +366,7 @@ skMemRex = re.compile(r'skmem:\(r(?P<rmem_alloc>[0-9]+),rb(?P<read_buffer>[0-9]+
 fixSkAttributesRex = re.compile(r'([^\s]+) ([0-9]+[^\s]+)')
 statRex = re.compile(r'^[\s]*([^\s\:]+)[:|\s]+([0-9]+)')
 unitRex = re.compile(r'(?P<number>[0-9\.]+)(?P<unit>[A-Z]bps)')
-units = {"bps": 1, "Kbps": 10**3, "Mbps": 10**6, "Gbps": 10**9, "Tbps": 10**12}
+units = {"b": 1, "Kb": 10**3, "Mb": 10**6, "Gb": 10**9, "Tb": 10**12}
 time = None
 time_metadata = defaultdict()
 socket_attributes = defaultdict()
@@ -358,13 +378,40 @@ socket_base_attributes = ['net_id', 'state', 'local_addr', 'local_port', 'peer_a
 socket_bad_delta = ['rmem_alloc', 'read_buffer', 'wmem_alloc', 'snd_buff', 'fwd_alloc', 'wmem_queued', 'opt_mem', 'back_log', 'sock_drop' ]
 netdev_attributes = ['rx_bytes', 'rx_packets', 'rx_errs', 'rx_drop', 'rx_fifo', 'rx_frame', 'rx_compressed', 'multicast', 'tx_bytes', 'tx_packets', 'tx_errs', 'tx_drop', 'tx_fifo', 'tx_colls', 'tx_carrier', 'tx_compressed']
 softnet_attributes = ['cpu_collision', 'flow_limit_count', 'packet_drops', 'packet_process', 'received_rps', 'time_squeeze']
+conn_fields = ["src", "dst", "sport", "dport"]
 
 def convert_to_bits(size):
+  """
+  Will convert a 'bps' string like 10Gbps to bits
+  """
   u = re.search(unitRex, size)
   return int(float(u.groupdict()["number"])*units[u.groupdict()["unit"]])
 
-def convert_to_unit(size, unit="Mbps"):
+def convert_bits_to_unit(size, unit="Mb"):
   return round(float("{0:.2f}".format(size / units[unit])),2)
+
+def convert_bytes_to_bits(size):
+  return round(float("{0:.2f}".format(size * 8)),2)
+
+def convert_bytes_to_mb(size):
+  return convert_bits_to_unit(convert_bytes_to_bits(size))
+
+def convert_bytes_to_mbps(size, seconds):
+  return round(convert_bytes_to_mb(size) / seconds, 2)
+
+
+def convert_type(val):
+  if not val:
+    return None
+  if "bps" in val and " " not in val:
+    return convert_bits_to_unit(convert_to_bits(val))
+  if not type(val) is int and re.search(r'^[0-9]+$', val):
+    return int(val)
+  elif not type(val) is float and re.search(r'^[0-9]+\.[0-9]+$', val):
+    return float(val)
+  else:
+    return val
+
 
 def compare_events(cur_obj, prev_obj, attribute):
   """ Compares 2 objects based on an attribute, also make sure that
@@ -382,18 +429,6 @@ def filter_previous_events(cur_obj, attribute):
 def save_attribute(key):
   if key not in socket_attributes:
     socket_attributes[key] = 1
-
-def convert_type(val):
-  if not val:
-    return None
-  if "bps" in val and " " not in val:
-    return convert_to_unit(convert_to_bits(val))
-  if not type(val) is int and re.search(r'^[0-9]+$', val):
-    return int(val)
-  elif not type(val) is float and re.search(r'^[0-9]+\.[0-9]+$', val):
-    return float(val)
-  else:
-    return val
 
 
 def get_command_cpu(proc):
@@ -566,9 +601,38 @@ class SoftnetStats(ReprBase):
         """
         return any(cpu["packet_drops"] > 0 for cpu in self.cpu_nstats)
 
+class Conntrack(ReprBase):
+  """
+  Class to represent an conntrack line
+  """
+  #udp      17 29 src=192.168.3.180 dst=192.168.3.173 sport=52319 dport=4789 [UNREPLIED] src=192.168.3.173 dst=192.168.3.180 sport=4789 dport=52319 mark=0 secctx=system_u:object_r:unlabeled_t:s0 use=1
+  #tcp      6 113 TIME_WAIT src=192.168.0.185 dst=192.168.0.133 sport=51500 dport=9696 src=192.168.0.133 dst=192.168.0.185 sport=9696 dport=51500 [ASSURED] mark=0 secctx=system_u:object_r:unlabeled_t:s0 use=1
+  def __init__(self, time, line):
+      self.time_read = time
+      l = line.split()
+      self.transport = l.pop(0)
+      l.pop(0)
+      self.invalidated_secs = l.pop(0)
+      if self.transport == "tcp":
+        self.tcp_state = l.pop(0)
+      conn = {}
+      self.flags = []
+      while l:
+        v = l.pop(0)
+        if "=" in v:
+          k = v.split('=')
+          conn_fname = k[0]
+          if k[0] in conn_fields:
+            conn_fname = f"{k[0]}-conn"
+            if conn_fname in conn:
+              conn_fname = f"{k[0]}-resp"
+          conn[conn_fname] = k[1]
+        else:
+          self.flags.append(v)
+      self.__dict__.update(conn)
 class Netdev(ReprBase):
   """
-  Class to represent an interrupt
+  Class to represent a Netdev
   """
   def __init__(self, time, iface, args, **kw):
       self.time_read = time
@@ -662,6 +726,8 @@ def main():
   time_metadata = defaultdict()
   full_list = list()
   current_list = list()
+  if args.filter_name:
+      filter_name_rex = re.compile(f'.*{args.filter_name}.*')
   if args.type == "softnet":
     content = ""
   if args.type == "ss":
@@ -713,13 +779,16 @@ def main():
           proc = Process(time, line, args.extended_ps)
           if hasattr(proc, "pid"):
             current_list.append(proc)
+        elif args.type == "conntrack":
+          current_list.append(Conntrack(time, line))
         elif args.type == "netdev":
           if "packets errs drop fifo frame compressed" in line or "Inter-" in line:
               continue
           line_split = line.split()
           iface = line_split.pop(0).strip(':')
           attr = dict(zip(netdev_attributes, map(int, line_split)))
-          current_list.append(Netdev(time, iface, args, **attr))
+          if not args.filter_name or filter_name_rex.match(iface):
+              current_list.append(Netdev(time, iface, args, **attr))
         elif args.type == "softnet":
           content += line
         elif args.type == "interrupts":
@@ -751,10 +820,10 @@ def main():
     # For example, if we want to monitor only the process that --match=instance-00002c
     # and the instance isn't pinned, its threads might move around, so we need to keep track
     # of where the instance is on each one of the pollings
-    if args.process_match:
+    if args.process_match or args.track_pid:
       cpu_ids_by_time = defaultdict(list)
       for p in full_list:
-        if args.process_match in " ".join(p.full_command) and p.cpu_id not in cpu_ids_by_time[p.time_read]:
+        if ((args.track_pid and int(p.pid) == args.track_pid) or (args.process_match and args.process_match in " ".join(p.full_command))) and p.cpu_id not in cpu_ids_by_time[p.time_read]:
           cpu_ids_by_time[p.time_read].append(p.cpu_id)
     # Now we need to build the time_metadata dict 
     for p in full_list:
@@ -765,7 +834,7 @@ def main():
       # Yes, I'm lazy here
       if not args.extended_ps:
         cpu = -1
-      if not args.process_match or cpu in cpu_ids_by_time[p.time_read]:
+      if (not args.track_pid and not args.process_match) or cpu in cpu_ids_by_time[p.time_read]:
         if p.time_read not in time_metadata:
           time_metadata[p.time_read] = defaultdict()
         if cpu not in time_metadata[p.time_read]:
@@ -793,7 +862,8 @@ def main():
           print_metadata(t, c)
           for p in proc:
             printed_count += 1
-            if table.rowcount >= args.top_results_cmd:
+            if (table.rowcount >= args.top_results_cmd or
+                (args.nonzero_delta is True and p.cpu_diff == 0)):
               print(table)
               table.clear_rows()
               printed_count = 0
@@ -814,6 +884,7 @@ def main():
           ((args.nonzero_delta is True and s.diff > 0) or args.nonzero_delta is False) and
           (s.diff >= args.min_delta)):
         converted = 0
+        number_of_seconds = 1
         if s.previous_event_time:
             number_of_seconds = (s.time_read - s.previous_event_time).total_seconds()
         if re.match(r'.*(\.|_)bytes', s.name):
@@ -833,6 +904,8 @@ def main():
               print("%s %s %s (%s) %s%%" % (s.time_read, s.name, s.value, s.diff, percent_diff))
             else:
               print("%s %s %s %s %s%%" % (s.time_read, s.name, converted, unit, percent_diff))
+        else:
+            print("%s %s %s %s %s%%" % (s.time_read, s.name, s.value, s.diff, percent_diff))
 
   if args.type == "softnet":
     table = PrettyTable()
@@ -840,6 +913,8 @@ def main():
     fields = list()
     table.field_names = ["Time", "CPU"] + args.sn_fields + list(map(lambda s: f"{s}_delta", args.sn_delta_fields))
     for s in full_list:
+      if args.cpu and str(s.cpu) not in args.cpu:
+        continue
       if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
           ((args.nonzero_delta is True and any(s.diffs[k] for k in args.sn_delta_fields if s.diffs.get(k, 0) > args.min_delta)) or args.nonzero_delta is False)):
           row = [s.time_read, s.cpu]
@@ -862,6 +937,8 @@ def main():
         header = f"{s.number}|{s.type1}|{'/'.join(s.type2)}"
         if m := re.match(r'((?P<driver>[^-]+)-)*(?P<nic>[^-]+)-(rx|tx|TxRx)-(?P<tx_rx>[0-9]+)', '/'.join(s.type2)):
             header = m.group('nic')
+        if args.filter_name and not re.match(f'.*{args.filter_name}.*', header):
+          continue
         if header not in headers:
           headers.append(header)
         if s.time_read not in results:
@@ -887,34 +964,107 @@ def main():
             row.append(0)
         table.add_row(row)
     print(table)
+  if args.type == "conntrack":
+    table = PrettyTable()
+    counter = {
+      "udp": 0,
+      "tcp": 0,
+      "unknown": 0,
+      "total_count": 0,
+    }
+    results = {}
+    tcp_states = []
+    conn_flags = []
+    for s in full_list:
+      if s.time_read not in results:
+        result = results[s.time_read] = deepcopy(counter)
+      result[s.transport] += 1
+      result['total_count'] += 1
+      if len(s.flags):
+        flag = s.flags[0]
+        if flag not in conn_flags:
+          conn_flags.append(flag)
+        if flag not in result:
+          result[flag] = 0
+        result[flag] += 1
+      if s.transport == "tcp":
+        if s.tcp_state not in tcp_states:
+          tcp_states.append(s.tcp_state)
+        if s.tcp_state not in result:
+          result[s.tcp_state] = 0
+        result[s.tcp_state] += 1
+    fields = ['Time'] + list(counter.keys()) + tcp_states + conn_flags
+    table.field_names = fields
+    for ts, r in results.items():
+      row = [ts]
+      for field in fields[1:]:
+        row.append(r.get(field, 0))
+      table.add_row(row)
+    print(table)
   if args.type == "netdev":
     table = PrettyTable()
     print_header = True
-    fields = list()
-    table.field_names = ["Time", "Iface"] + args.nd_fields + list(map(lambda s: f"{s}_delta", args.nd_delta_fields))
+    fields = ["Time"]
+    sum_by_types = ["packets", "bytes", "drop"]
+    if not args.sum_by_time:
+      fields.append("Iface")
+    fields += args.nd_fields + list(map(lambda s: f"{s}_delta", args.nd_delta_fields))
+    if args.sum_by_types:
+        fields.extend(sum_by_types)
+    new_fields = []
+    for f in fields:
+      if f.endswith("_bytes"):
+        f = f.replace("_bytes"," (Mb)")
+      if f.endswith("_packets"):
+        f = f.replace("_packets"," (Kpkts)")
+      if f.endswith("_bytes_delta"):
+        f = f.replace("_bytes_delta", " (Mbps)")
+      if f.endswith("_packets_delta"):
+        f = f.replace("_packets_delta", " (Kpkts)")
+      if f.endswith("_drop_delta"):
+        f = f.replace("_drop_delta", " drops (Kpkts)")
+      new_fields.append(f)
+    table.field_names = new_fields
+    time_aggregate = {}
     for s in full_list:
       if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
           ((args.nonzero_delta is True and s.diff > 0) or args.nonzero_delta is False) and
           (s.diff >= args.min_delta)):
-          row = [s.time_read, s.iface]
-          number_of_seconds = 1
-          if s.previous_event_time:
-              number_of_seconds = (s.time_read - s.previous_event_time).total_seconds()
-          for k in args.nd_fields:
-            value = getattr(s, k)
-            if k.endswith('_bytes'):
-              value = round(value * 8 / 1024 / 1024 / number_of_seconds, 2)
-            if k.endswith('_packets'):
-              value = round(value / number_of_seconds, 2)
-            row.append(value)
-          for k in args.nd_delta_fields:
-            value = s.diffs.get(k, 0)
-            if k.endswith('_bytes'):
-              value = round(value * 8 / 1024 / 1024 / number_of_seconds, 2)
-            if k.endswith('_packets') or k.endswith('_drop'):
-              value = round(value / number_of_seconds, 2)
-            row.append(value)
-          table.add_row(row)
+        row = [s.time_read, s.iface]
+        number_of_seconds = 1
+        sum_by_types_values = {k:0 for k in sum_by_types}
+        if s.previous_event_time:
+            number_of_seconds = (s.time_read - s.previous_event_time).total_seconds()
+        for k in args.nd_fields:
+          value = getattr(s, k)
+          if k.endswith('_bytes'):
+            value = convert_bytes_to_mb(value)
+          if k.endswith('_packets'):
+            value = round(value / 1024, 2)
+          row.append(value)
+        for k in args.nd_delta_fields:
+          value = s.diffs.get(k, 0)
+          if k.endswith('_bytes'):
+            value = convert_bytes_to_mbps(value, number_of_seconds)
+          if k.endswith('_packets') or k.endswith('_drop'):
+            value = round(value / number_of_seconds, 2)
+          row.append(value)
+          for t in sum_by_types:
+            if k.endswith(t):
+              sum_by_types_values[t] += value
+        if args.sum_by_types:
+          row.extend([sum_by_types_values[k] for k in sum_by_types])
+        if s.time_read not in time_aggregate:
+            time_aggregate[s.time_read] = row[2:]
+        else:
+            time_aggregate[s.time_read] = list(map(lambda x: round(x, 2), list(map(operator.add, time_aggregate[s.time_read], row[2:]))))
+        if not args.sum_by_time:
+            row = list(map(lambda x: "{:.2f}".format(x) if isinstance(x, float) else x, row))
+            table.add_row(row)
+    if args.sum_by_time:
+      for timestamp, values in time_aggregate.items():
+        values = list(map(lambda x: "{:.2f}".format(x), values))
+        table.add_row([timestamp] + values)
     print(table)
 
   if args.type == "ss":
