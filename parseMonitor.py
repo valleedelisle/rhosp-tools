@@ -341,6 +341,11 @@ def parse_args():
                        dest='nonzero_delta',
                        default=False,
                        help='Only show nonzero delta (works for sysstat, ss, netdev and interrupts)')
+  parser.add_argument('--nonzero-delta-fields',
+                       nargs='+',
+                       dest='nonzero_delta_fields',
+                       default=['tx_drop', 'rx_drop'],
+                       help='Only show nonzero delta (works for netdev)')
   parser.add_argument('--min-delta',
                        action='store',
                        dest='min_delta',
@@ -376,7 +381,8 @@ socket_display_attributes = ['time_read', 'state', 'net_id', 'local_addr', 'loca
 socket_base_attributes = ['net_id', 'state', 'local_addr', 'local_port', 'peer_addr', 'peer_port', 'pid', 'process', 'sk_id']
 #socket_bad_delta = ['sock_drop', 'recv_q', 'send_q', 'ato', 'rto' ]
 socket_bad_delta = ['rmem_alloc', 'read_buffer', 'wmem_alloc', 'snd_buff', 'fwd_alloc', 'wmem_queued', 'opt_mem', 'back_log', 'sock_drop' ]
-netdev_attributes = ['rx_bytes', 'rx_packets', 'rx_errs', 'rx_drop', 'rx_fifo', 'rx_frame', 'rx_compressed', 'multicast', 'tx_bytes', 'tx_packets', 'tx_errs', 'tx_drop', 'tx_fifo', 'tx_colls', 'tx_carrier', 'tx_compressed']
+# rx_bytes rx_packets rx_errs rx_drop rx_fifo rx_frame rx_compressed multicast tx_bytes tx_packets tx_errs tx_drop tx_fifo tx_colls tx_carrier tx_compressed
+netdev_attributes = ['rx_bytes', 'rx_packets', 'rx_errs', 'rx_drop', 'rx_fifo', 'rx_frame', 'rx_compressed', 'multicast', 'tx_bytes', 'tx_packets', 'tx_errs', 'tx_drop', 'tx_fifo', 'tx_colls', 'tx_carrier', 'tx_compressed', 'rx_pkt_size', 'tx_pkt_size']
 softnet_attributes = ['cpu_collision', 'flow_limit_count', 'packet_drops', 'packet_process', 'received_rps', 'time_squeeze']
 conn_fields = ["src", "dst", "sport", "dport"]
 
@@ -642,11 +648,17 @@ class Netdev(ReprBase):
       self.diff = 0
       self.previous_event_time = None
       self.diffs = {}
+      self.rx_pkt_size = 0
+      self.tx_pkt_size = 0
       if previous_event:
         self.diff = int(getattr(self, args.nd_delta_fields[0])) - int(getattr(previous_event, args.nd_delta_fields[0]))
         self.previous_event_time = previous_event.time_read
         for field in args.nd_delta_fields:
           self.diffs[field] = int(getattr(self, field)) - int(getattr(previous_event, field))
+        if self.diffs['rx_packets']:
+          self.rx_pkt_size = round(self.diffs['rx_bytes'] / self.diffs['rx_packets'], 2)
+        if self.diffs['tx_packets']:
+          self.tx_pkt_size = round(self.diffs['tx_bytes'] / self.diffs['tx_packets'], 2)
  
 class Interrupt(ReprBase):
   """
@@ -1008,46 +1020,54 @@ def main():
     sum_by_types = ["packets", "bytes", "drop"]
     if not args.sum_by_time:
       fields.append("Iface")
-    fields += args.nd_fields + list(map(lambda s: f"{s}_delta", args.nd_delta_fields))
+    nd_fields = args.nd_fields
+    if "None" in nd_fields:
+      nd_fields = []
+    fields += nd_fields + list(map(lambda s: f"{s}_delta", args.nd_delta_fields))
     if args.sum_by_types:
         fields.extend(sum_by_types)
-    new_fields = []
-    for f in fields:
-      if f.endswith("_bytes"):
-        f = f.replace("_bytes"," (Mb)")
-      if f.endswith("_packets"):
-        f = f.replace("_packets"," (Kpkts)")
-      if f.endswith("_bytes_delta"):
-        f = f.replace("_bytes_delta", " (Mbps)")
-      if f.endswith("_packets_delta"):
-        f = f.replace("_packets_delta", " (Kpkts)")
-      if f.endswith("_drop_delta"):
-        f = f.replace("_drop_delta", " drops (Kpkts)")
-      new_fields.append(f)
+    new_fields = fields
+    if args.convert:
+      new_fields = []
+      for f in fields:
+        if f.endswith("_bytes"):
+          f = f.replace("_bytes"," (Mb)")
+        if f.endswith("_packets"):
+          f = f.replace("_packets"," (Kpkts)")
+        if f.endswith("_drop"):
+          f = f.replace("_drop"," drops (Kpkts)")
+        if f.endswith("_bytes_delta"):
+          f = f.replace("_bytes_delta", " (Mbps)")
+        if f.endswith("_packets_delta"):
+          f = f.replace("_packets_delta", " (Kpkts/s)")
+        if f.endswith("_drop_delta"):
+          f = f.replace("_drop_delta", " drops (Kpkts/s)")
+        new_fields.append(f)
     table.field_names = new_fields
     time_aggregate = {}
     for s in full_list:
       if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
-          ((args.nonzero_delta is True and s.diff > 0) or args.nonzero_delta is False) and
-          (s.diff >= args.min_delta)):
+          ((args.nonzero_delta is True and any(s.diffs.get(x, 0) > args.min_delta for x in args.nonzero_delta_fields)) or args.nonzero_delta is False)):
         row = [s.time_read, s.iface]
         number_of_seconds = 1
         sum_by_types_values = {k:0 for k in sum_by_types}
         if s.previous_event_time:
             number_of_seconds = (s.time_read - s.previous_event_time).total_seconds()
-        for k in args.nd_fields:
+        for k in nd_fields:
           value = getattr(s, k)
-          if k.endswith('_bytes'):
+          if args.convert and k.endswith('_bytes'):
             value = convert_bytes_to_mb(value)
-          if k.endswith('_packets'):
+          if args.convert and k.endswith('_packets'):
             value = round(value / 1024, 2)
           row.append(value)
         for k in args.nd_delta_fields:
           value = s.diffs.get(k, 0)
           if k.endswith('_bytes'):
-            value = convert_bytes_to_mbps(value, number_of_seconds)
+            if args.convert:
+              value = convert_bytes_to_mbps(value, number_of_seconds)
           if k.endswith('_packets') or k.endswith('_drop'):
-            value = round(value / number_of_seconds, 2)
+            if args.convert:
+              value = round(value / 1024 / number_of_seconds, 2)
           row.append(value)
           for t in sum_by_types:
             if k.endswith(t):
