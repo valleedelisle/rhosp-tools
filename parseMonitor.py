@@ -256,6 +256,10 @@ def parse_args():
                   dest='ct_stats_delta_fields',
                   default=ct_stats_delta,
                   help='Fields to calculate delta on')
+  ct_stats.add_argument('--count-by-cpu',
+                  action='store_true',
+                  default=False,
+                  help='Count by CPU for each delta fields')
   netdev.add_argument('--netdev-fields',
                   nargs='+',
                   dest='nd_fields',
@@ -356,7 +360,7 @@ def parse_args():
                        nargs='+',
                        dest='nonzero_delta_fields',
                        default=['tx_drop', 'rx_drop'],
-                       help='Only show nonzero delta (works for netdev)')
+                       help='Only show nonzero delta (works for netdev and conntrack-stats)')
   parser.add_argument('--min-delta',
                        action='store',
                        dest='min_delta',
@@ -1013,13 +1017,26 @@ def main():
   if args.type == "conntrack-stats":
     table = PrettyTable()
     print_header = True
-    fields = list()
-    table.field_names = ["Time", "CPU"] + args.ct_stats_fields + list(map(lambda s: f"{s}_delta", args.ct_stats_delta_fields))
+    delta_fields = list(map(lambda s: f"{s}_delta", args.ct_stats_delta_fields))
+    if not args.count_by_cpu:
+        table.field_names = ["Time", "CPU"] + args.ct_stats_fields + delta_fields
+    else:
+        table.field_names = ["CPU"] + args.nonzero_delta_fields
+        cpu_counts = {}
+
     for s in full_list:
       if args.cpu and str(s.cpu) not in args.cpu:
         continue
-      if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
-          ((args.nonzero_delta is True and any(s.diffs[k] for k in args.ct_stats_delta_fields if s.diffs.get(k, 0) > args.min_delta)) or args.nonzero_delta is False)):
+      if args.count_by_cpu:
+          cpu = str(s.cpu)
+          if cpu not in cpu_counts:
+              cpu_counts[cpu] = {}
+              for field in args.nonzero_delta_fields:
+                  cpu_counts[cpu][field] = 0
+          for field in args.nonzero_delta_fields:
+              cpu_counts[cpu][field] += s.diffs.get(field, 0)
+      elif (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
+          ((args.nonzero_delta is True and any(s.diffs.get(x, 0) > args.min_delta for x in args.nonzero_delta_fields)) or args.nonzero_delta is False)):
           row = [s.time_read, s.cpu]
           for k in args.ct_stats_fields:
             value = getattr(s, k)
@@ -1028,6 +1045,10 @@ def main():
             value = s.diffs.get(k, 0)
             row.append(value)
           table.add_row(row)
+    if args.count_by_cpu:
+        for cpu, values in cpu_counts.items():
+            row = [cpu] + [values.get(v, 0) for v in args.nonzero_delta_fields]
+            table.add_row(row)
     print(table)
   if args.type == "conntrack-flow":
     table = PrettyTable()
