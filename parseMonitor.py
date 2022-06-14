@@ -225,7 +225,7 @@ def parse_args():
   parser.add_argument('-t', '--type',
                       action='store',
                       dest='type',
-                      choices=('ss', 'ps', 'sysstat', 'interrupts', 'netdev', 'softnet', 'conntrack'),
+                      choices=('ss', 'ps', 'sysstat', 'interrupts', 'netdev', 'softnet', 'conntrack-flow', 'conntrack-stats'),
                       type=str,
                       help='File type getting parsed')
   parser.add_argument('files', nargs='+', action='store')
@@ -235,6 +235,7 @@ def parse_args():
   softnet = parser.add_argument_group('softnet')
   ps = parser.add_argument_group('ps')
   sysstat = parser.add_argument_group('sysstat')
+  ct_stats = parser.add_argument_group('ct_stats')
   softnet.add_argument('--softnet-fields',
                   nargs='+',
                   dest='sn_fields',
@@ -245,6 +246,16 @@ def parse_args():
                   dest='sn_delta_fields',
                   default=softnet_attributes,
                   help='Softnet Fields to calculate delta on')
+  ct_stats.add_argument('--ct-stats-fields',
+                  nargs='+',
+                  dest='ct_stats_fields',
+                  default=ct_stats_attributes,
+                  help='Conntrack stats fields to display')
+  ct_stats.add_argument('--ct-stats-delta-field',
+                  nargs='+',
+                  dest='ct_stats_delta_fields',
+                  default=ct_stats_delta,
+                  help='Fields to calculate delta on')
   netdev.add_argument('--netdev-fields',
                   nargs='+',
                   dest='nd_fields',
@@ -383,6 +394,9 @@ socket_base_attributes = ['net_id', 'state', 'local_addr', 'local_port', 'peer_a
 socket_bad_delta = ['rmem_alloc', 'read_buffer', 'wmem_alloc', 'snd_buff', 'fwd_alloc', 'wmem_queued', 'opt_mem', 'back_log', 'sock_drop' ]
 # rx_bytes rx_packets rx_errs rx_drop rx_fifo rx_frame rx_compressed multicast tx_bytes tx_packets tx_errs tx_drop tx_fifo tx_colls tx_carrier tx_compressed
 netdev_attributes = ['rx_bytes', 'rx_packets', 'rx_errs', 'rx_drop', 'rx_fifo', 'rx_frame', 'rx_compressed', 'multicast', 'tx_bytes', 'tx_packets', 'tx_errs', 'tx_drop', 'tx_fifo', 'tx_colls', 'tx_carrier', 'tx_compressed', 'rx_pkt_size', 'tx_pkt_size']
+#cpu=46  	searched=3810930068 found=820880187 new=13163376 invalid=338222 ignore=88589 delete=8217263 delete_list=6318540 insert=11264651 insert_failed=4 drop=0 early_drop=0 error=4381 search_restart=0
+ct_stats_attributes = ['searched', 'found', 'new', 'invalid', 'ignore', 'delete', 'delete_list', 'insert', 'insert_failed', 'drop', 'early_drop', 'error', 'search_restart']
+ct_stats_delta = ['searched', 'found', 'new', 'invalid', 'ignore', 'delete', 'delete_list', 'insert', 'insert_failed', 'drop', 'early_drop', 'error', 'search_restart']
 softnet_attributes = ['cpu_collision', 'flow_limit_count', 'packet_drops', 'packet_process', 'received_rps', 'time_squeeze']
 conn_fields = ["src", "dst", "sport", "dport"]
 
@@ -607,7 +621,25 @@ class SoftnetStats(ReprBase):
         """
         return any(cpu["packet_drops"] > 0 for cpu in self.cpu_nstats)
 
-class Conntrack(ReprBase):
+class ConntrackStats(ReprBase):
+  """
+  Class to represent an conntrack stat line
+  """
+  # cpu=63  	searched=3359421323 found=832568164 new=14553948 invalid=398132 ignore=303569 delete=8669240 delete_list=7364231 insert=13248861 insert_failed=4 drop=1 early_drop=0 error=4907 search_restart=0
+  def __init__(self, time, line, args):
+      self.time_read = time
+      kvs  = {v.split("=")[0]:v.split("=")[1] for v in line.split()}
+      self.__dict__.update(kvs)
+      previous_event = filter_previous_events(self, "cpu")
+      self.diff = 0
+      self.previous_event_time = None
+      self.diffs = {}
+      if previous_event:
+        self.previous_event_time = previous_event.time_read
+        for field in args.ct_stats_delta_fields:
+          self.diffs[field] = int(getattr(self, field)) - int(getattr(previous_event, field))
+
+class ConntrackFlow(ReprBase):
   """
   Class to represent an conntrack line
   """
@@ -791,8 +823,10 @@ def main():
           proc = Process(time, line, args.extended_ps)
           if hasattr(proc, "pid"):
             current_list.append(proc)
-        elif args.type == "conntrack":
-          current_list.append(Conntrack(time, line))
+        elif args.type == "conntrack-flow":
+          current_list.append(ConntrackFlow(time, line))
+        elif args.type == "conntrack-stats":
+          current_list.append(ConntrackStats(time, line, args))
         elif args.type == "netdev":
           if "packets errs drop fifo frame compressed" in line or "Inter-" in line:
               continue
@@ -976,7 +1010,26 @@ def main():
             row.append(0)
         table.add_row(row)
     print(table)
-  if args.type == "conntrack":
+  if args.type == "conntrack-stats":
+    table = PrettyTable()
+    print_header = True
+    fields = list()
+    table.field_names = ["Time", "CPU"] + args.ct_stats_fields + list(map(lambda s: f"{s}_delta", args.ct_stats_delta_fields))
+    for s in full_list:
+      if args.cpu and str(s.cpu) not in args.cpu:
+        continue
+      if (((args.nonzero_value is True and s.value > 0) or args.nonzero_value is False) and
+          ((args.nonzero_delta is True and any(s.diffs[k] for k in args.ct_stats_delta_fields if s.diffs.get(k, 0) > args.min_delta)) or args.nonzero_delta is False)):
+          row = [s.time_read, s.cpu]
+          for k in args.ct_stats_fields:
+            value = getattr(s, k)
+            row.append(value)
+          for k in args.ct_stats_delta_fields:
+            value = s.diffs.get(k, 0)
+            row.append(value)
+          table.add_row(row)
+    print(table)
+  if args.type == "conntrack-flow":
     table = PrettyTable()
     counter = {
       "udp": 0,
