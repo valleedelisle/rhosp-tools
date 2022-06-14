@@ -260,6 +260,10 @@ def parse_args():
                   action='store_true',
                   default=False,
                   help='Count by CPU for each delta fields')
+  ct_stats.add_argument('--get-ratio',
+                  action='store_true',
+                  default=False,
+                  help='Calculate some pre-determined ratios')
   netdev.add_argument('--netdev-fields',
                   nargs='+',
                   dest='nd_fields',
@@ -1021,7 +1025,10 @@ def main():
     if not args.count_by_cpu:
         table.field_names = ["Time", "CPU"] + args.ct_stats_fields + delta_fields
     else:
-        table.field_names = ["CPU"] + args.nonzero_delta_fields
+        fields = ["CPU"] + args.nonzero_delta_fields
+        if args.get_ratio:
+          fields.extend(["Found/Search", "New/Search", "Insert/New", "Invalid/Search", "Ignore/Search", "Deletes/List"])
+        table.field_names = fields
         cpu_counts = {}
 
     for s in full_list:
@@ -1046,9 +1053,17 @@ def main():
             row.append(value)
           table.add_row(row)
     if args.count_by_cpu:
-        for cpu, values in cpu_counts.items():
-            row = [cpu] + [values.get(v, 0) for v in args.nonzero_delta_fields]
+        for cpu, v in cpu_counts.items():
+            row = [cpu] + [v.get(f, 0) for f in args.nonzero_delta_fields]
+            if args.get_ratio:
+              row.append(round(v.get('found', 0) / v.get('searched') * 100, 2))
+              row.append(round(v.get('new', 0) / v.get('searched') * 100, 2))
+              row.append(round(v.get('insert', 0) / v.get('new') * 100, 2))
+              row.append(round(v.get('invalid', 0) / v.get('searched') * 100, 2))
+              row.append(round(v.get('ignore', 0) / v.get('searched') * 100, 2))
+              row.append(round(v.get('delete_list', 0) / v.get('delete') * 100, 2))
             table.add_row(row)
+
     print(table)
   if args.type == "conntrack-flow":
     table = PrettyTable()
