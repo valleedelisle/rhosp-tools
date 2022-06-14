@@ -221,14 +221,16 @@ while [ "$ITERATIONS" != 0 ]; do
     fi
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/conntrack_list"
     conntrack -L >> "$HOSTNAME-network_stats_$now/conntrack_list"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/conntrack_stats"
+    conntrack --stats >> "$HOSTNAME-network_stats_$now/conntrack_stats"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/sa1"
     /usr/lib64/sa/sa1 1 1 >> "$HOSTNAME-network_stats_$now/sa1"
     echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/iostat"
     iostat -Ntmx 1 2 >> "$HOSTNAME-network_stats_$now/iostat"
-    #echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/pmd_rxq_show"
-    #ovs-appctl dpif-netdev/pmd-rxq-show >> "$HOSTNAME-network_stats_$now/pmd_rxq_show"
-    #echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/pmd_stats_show"
-    #ovs-appctl dpif-netdev/pmd-stats-show >> "$HOSTNAME-network_stats_$now/pmd_stats_show"
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/pmd_rxq_show"
+    ovs-appctl dpif-netdev/pmd-rxq-show >> "$HOSTNAME-network_stats_$now/pmd_rxq_show" 2>/dev/null
+    echo "===== $(date +"%F %T.%N%:z (%Z)") =====" >> "$HOSTNAME-network_stats_$now/pmd_stats_show"
+    ovs-appctl dpif-netdev/pmd-stats-show >> "$HOSTNAME-network_stats_$now/pmd_stats_show" 2>/dev/null
     if [ "$ITERATIONS" -gt 0 ]; then let ITERATIONS-=1; fi
     # Wait till background jobs are finished
     wait
